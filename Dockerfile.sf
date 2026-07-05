@@ -1,0 +1,106 @@
+# Debian Buster (glibc 2.28) — math symbols stay at GLIBC_2.4.
+# Bullseye (2.31) re-versioned exp/pow/log to GLIBC_2.29 which Kindle lacks.
+# fcntl64@GLIBC_2.28 is patched out via src/compat_glibc.c.
+FROM debian:buster
+
+# Buster reached EOL — repos moved to archive.
+RUN sed -i 's|http://deb.debian.org/debian|http://archive.debian.org/debian|g; \
+            s|http://security.debian.org/debian-security|http://archive.debian.org/debian-security|g; \
+            /buster-updates/d' /etc/apt/sources.list && \
+    echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid
+
+# ── Cross-compiler + build tools ─────────────────────────────────
+RUN apt-get update -qq && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        gcc-arm-linux-gnueabi \
+        g++-arm-linux-gnueabi \
+        binutils-arm-linux-gnueabi \
+        libc6-dev-armel-cross \
+        make wget xz-utils bzip2 pkg-config \
+        ca-certificates \
+        nasm yasm \
+        cmake autoconf automake libtool \
+        python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Build ARM static OpenSSL 1.1.1 ───────────────────────────────
+ARG OPENSSL_VER=1.1.1w
+RUN wget -q https://www.openssl.org/source/openssl-${OPENSSL_VER}.tar.gz && \
+    tar xf openssl-${OPENSSL_VER}.tar.gz && \
+    cd openssl-${OPENSSL_VER} && \
+    ./Configure linux-armv4 \
+        --cross-compile-prefix=arm-linux-gnueabi- \
+        --prefix=/opt/openssl-arm \
+        no-shared no-tests \
+        -march=armv7-a -mfloat-abi=softfp -mfpu=neon -fPIC && \
+    make -j$(nproc) && \
+    make install_sw && \
+    cd .. && rm -rf openssl-${OPENSSL_VER} openssl-${OPENSSL_VER}.tar.gz
+
+# ── Build ARM static libplist ─────────────────────────────────────
+# libplist 2.3.0 — only need the C library (no C++ binding)
+ARG PLIST_VER=2.3.0
+RUN wget -q https://github.com/libimobiledevice/libplist/releases/download/${PLIST_VER}/libplist-${PLIST_VER}.tar.bz2 && \
+    tar xf libplist-${PLIST_VER}.tar.bz2 && \
+    cd libplist-${PLIST_VER} && \
+    ./configure \
+        --host=arm-linux-gnueabi \
+        --prefix=/opt/plist-arm \
+        --enable-static \
+        --disable-shared \
+        --without-cython \
+        CC=arm-linux-gnueabi-gcc \
+        CXX=arm-linux-gnueabi-g++ \
+        CFLAGS="-march=armv7-a -mfloat-abi=softfp -mfpu=neon -fPIC" \
+        CXXFLAGS="-march=armv7-a -mfloat-abi=softfp -mfpu=neon -fPIC" && \
+    make -j$(nproc) && \
+    make install && \
+    cd .. && rm -rf libplist-${PLIST_VER} libplist-${PLIST_VER}.tar.bz2
+
+# ── Build minimal ARM static ffmpeg ──────────────────────────────
+# Only what we need: H.264 decoder + libswscale (YUV→gray8 conversion)
+ARG FFMPEG_VER=4.4.4
+RUN wget -q https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VER}.tar.xz && \
+    tar xf ffmpeg-${FFMPEG_VER}.tar.xz && \
+    cd ffmpeg-${FFMPEG_VER} && \
+    ./configure \
+        --cross-prefix=arm-linux-gnueabi- \
+        --target-os=linux \
+        --arch=arm \
+        --cpu=armv7-a \
+        --enable-cross-compile \
+        --enable-static \
+        --disable-shared \
+        --disable-everything \
+        --enable-decoder=h264 \
+        --enable-avcodec \
+        --enable-avutil \
+        --enable-swscale \
+        --disable-avformat \
+        --disable-avdevice \
+        --disable-avfilter \
+        --disable-swresample \
+        --disable-postproc \
+        --disable-doc \
+        --disable-programs \
+        --disable-network \
+        --enable-pic \
+        --extra-cflags="-march=armv7-a -mfloat-abi=softfp -mfpu=neon -fPIC" \
+        --prefix=/opt/ffmpeg-arm \
+        --quiet && \
+    make -j$(nproc) && \
+    make install && \
+    cd .. && rm -rf ffmpeg-${FFMPEG_VER} ffmpeg-${FFMPEG_VER}.tar.xz
+
+WORKDIR /work
+
+CMD ["bash", "-c", \
+     "make build-kindle/libairplay_mirror.so \
+        CC_KINDLE=arm-linux-gnueabi-gcc \
+        STRIP_K=arm-linux-gnueabi-strip \
+        FF_CFLAGS='-I/opt/ffmpeg-arm/include' \
+        FF_LDFLAGS='/opt/ffmpeg-arm/lib/libavcodec.a /opt/ffmpeg-arm/lib/libswscale.a /opt/ffmpeg-arm/lib/libavutil.a -lm' \
+        OPENSSL_CFLAGS='-I/opt/openssl-arm/include' \
+        OPENSSL_LDFLAGS='/opt/openssl-arm/lib/libssl.a /opt/openssl-arm/lib/libcrypto.a' \
+        PLIST_CFLAGS='-I/opt/plist-arm/include' \
+        PLIST_LDFLAGS='/opt/plist-arm/lib/libplist-2.0.a'"]
