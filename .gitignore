@@ -1,0 +1,9 @@
+build-kindle-sf/
+build-kindle-hf/
+build-native/
+dist-sf/
+dist-hf/
+dist/
+build-kindle/
+*.zip
+*.zip.sha256

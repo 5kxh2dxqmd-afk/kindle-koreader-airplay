@@ -95,7 +95,7 @@ RUN wget -q https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VER}.tar.xz && \
 WORKDIR /work
 
 CMD ["bash", "-c", \
-     "make build-kindle/libairplay_mirror.so \
+     "make TARGET=sf build-kindle-sf/libairplay_mirror.so \
         CC_KINDLE=arm-linux-gnueabi-gcc \
         STRIP_K=arm-linux-gnueabi-strip \
         FF_CFLAGS='-I/opt/ffmpeg-arm/include' \
