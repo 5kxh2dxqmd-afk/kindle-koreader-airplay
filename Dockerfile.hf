@@ -35,7 +35,7 @@ ENV PATH="/opt/x-tools/arm-kindlehf-linux-gnueabihf/bin:${PATH}"
 # (some tag cortex-a7, some cortex-a9); -march=armv7-a is the part that
 # actually matters for ABI/instruction-set correctness, -mtune is just an
 # optimization hint and safe to leave a little loose.
-ARG HF_CFLAGS="-march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard -mthumb -fPIC"
+ARG HF_CFLAGS="-march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard -fPIC"
 
 # ── Build ARM static OpenSSL 1.1.1 ───────────────────────────────
 ARG OPENSSL_VER=1.1.1w
