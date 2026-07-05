@@ -14,7 +14,7 @@ FROM debian:bookworm-slim
 RUN apt-get update -qq && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         wget xz-utils ca-certificates \
-        make pkg-config nasm yasm \
+        make perl pkg-config nasm yasm \
         cmake autoconf automake libtool \
         python3 \
     && rm -rf /var/lib/apt/lists/*
