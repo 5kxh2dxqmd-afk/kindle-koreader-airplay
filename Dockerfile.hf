@@ -46,6 +46,12 @@ RUN wget -q https://github.com/koreader/koxtoolchain/releases/download/${KOXTC_V
     rm kindlehf.tar.gz
 ENV PATH="/opt/x-tools/arm-kindlehf-linux-gnueabihf/bin:${PATH}"
 
+RUN echo "=== Checking Kindle toolchain ===" && \
+    find /opt/x-tools -maxdepth 3 -type f | grep gcc || true && \
+    find /opt/x-tools -maxdepth 3 -type d && \
+    which arm-kindlehf-linux-gnueabihf-gcc || true && \
+    arm-kindlehf-linux-gnueabihf-gcc --version || true
+
 ARG HF_CFLAGS="-march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard -fPIC"
 
 # ── Build ARM static OpenSSL 1.1.1 (via apt's gcc-arm-linux-gnueabihf) ──
