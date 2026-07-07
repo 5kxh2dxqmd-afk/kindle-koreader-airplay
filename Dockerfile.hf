@@ -130,5 +130,4 @@ CMD ["bash", "-c", \
         OPENSSL_LDFLAGS='/opt/openssl-arm/lib/libssl.a /opt/openssl-arm/lib/libcrypto.a' \
         PLIST_CFLAGS='-I/opt/plist-arm/include' \
         PLIST_LDFLAGS='/opt/plist-arm/lib/libplist-2.0.a'"]
-DOCKERFILE_EOF
 echo done
