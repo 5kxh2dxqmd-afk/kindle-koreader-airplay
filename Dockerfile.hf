@@ -4,22 +4,37 @@
 # from soft-float to hard-float ABI. Covers Paperwhite 6/12, current Scribe,
 # and any older device that's since been updated past 5.16.2.1.1.
 #
-# Unlike Dockerfile.sf (which hand-pins Debian Buster to control glibc symbol
-# versions), we pull koreader/koxtoolchain's prebuilt "kindlehf" crosstool-ng
-# toolchain. It bundles its own matching glibc/sysroot, so none of the
-# fcntl64/getentropy shims in src/compat_glibc.c are needed here — the
-# Makefile already excludes that file for TARGET=hf.
+# STRATEGY: two different cross-compilers, used for two different jobs:
+#
+#  1. Debian's apt-installed gcc-arm-linux-gnueabihf builds the static
+#     dependencies (OpenSSL/libplist/ffmpeg). These are the most
+#     battle-tested ARM hard-float cross-compiler on Linux (literally what
+#     most Raspberry Pi cross-compile guides use) -- using them here avoids
+#     depending on a less common toolchain's specific quirks for these
+#     finicky third-party build systems. This is safe: static .a archives
+#     are just relocatable object code -- their libc calls (malloc, memcpy,
+#     etc.) get resolved against whatever toolchain does the *final* link,
+#     not whatever compiled the .a in the first place. All that matters is
+#     matching ABI (armv7-a, hard-float), which any gnueabihf toolchain gives.
+#
+#  2. koreader/koxtoolchain's prebuilt "kindlehf" toolchain
+#     (arm-kindlehf-linux-gnueabihf-gcc) does the FINAL link of our own
+#     plugin code. This is the one place that actually needs to match the
+#     real on-device glibc: a dynamically-loaded .so's emitted symbol
+#     references get version-tagged (GLIBC_x.y) based on the linking
+#     toolchain's libc, and that has to be compatible with what's actually
+#     on the Kindle at runtime -- the same class of problem Dockerfile.sf
+#     solves for soft-float by pinning Debian Buster.
 FROM debian:bookworm-slim
 
 RUN apt-get update -qq && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        wget xz-utils ca-certificates \
-        make pkg-config nasm yasm \
-        cmake autoconf automake libtool \
-        python3 \
+        wget xz-utils bzip2 ca-certificates \
+        make perl pkg-config nasm yasm \
+        gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Fetch prebuilt kindlehf toolchain ─────────────────────────────
+# ── Fetch prebuilt kindlehf toolchain (final-link only, see header) ──
 # arm-kindlehf-linux-gnueabihf, from koreader/koxtoolchain releases.
 # Pin the release tag explicitly rather than tracking "latest" so builds
 # stay reproducible; bump KOXTC_VER by hand when you want a newer one.
@@ -31,19 +46,15 @@ RUN wget -q https://github.com/koreader/koxtoolchain/releases/download/${KOXTC_V
     rm kindlehf.tar.gz
 ENV PATH="/opt/x-tools/arm-kindlehf-linux-gnueabihf/bin:${PATH}"
 
-# NOTE: kindlehf toolchain releases have varied CPU tuning by version
-# (some tag cortex-a7, some cortex-a9); -march=armv7-a is the part that
-# actually matters for ABI/instruction-set correctness, -mtune is just an
-# optimization hint and safe to leave a little loose.
-ARG HF_CFLAGS="-march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard -mthumb -fPIC"
+ARG HF_CFLAGS="-march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard -fPIC"
 
-# ── Build ARM static OpenSSL 1.1.1 ───────────────────────────────
+# ── Build ARM static OpenSSL 1.1.1 (via apt's gcc-arm-linux-gnueabihf) ──
 ARG OPENSSL_VER=1.1.1w
 RUN wget -q https://www.openssl.org/source/openssl-${OPENSSL_VER}.tar.gz && \
     tar xf openssl-${OPENSSL_VER}.tar.gz && \
     cd openssl-${OPENSSL_VER} && \
     ./Configure linux-armv4 \
-        --cross-compile-prefix=arm-kindlehf-linux-gnueabihf- \
+        --cross-compile-prefix=arm-linux-gnueabihf- \
         --prefix=/opt/openssl-arm \
         no-shared no-tests \
         ${HF_CFLAGS} && \
@@ -51,34 +62,34 @@ RUN wget -q https://www.openssl.org/source/openssl-${OPENSSL_VER}.tar.gz && \
     make install_sw && \
     cd .. && rm -rf openssl-${OPENSSL_VER} openssl-${OPENSSL_VER}.tar.gz
 
-# ── Build ARM static libplist ─────────────────────────────────────
+# ── Build ARM static libplist (via apt's gcc-arm-linux-gnueabihf) ────
 # libplist 2.3.0 — only need the C library (no C++ binding)
 ARG PLIST_VER=2.3.0
 RUN wget -q https://github.com/libimobiledevice/libplist/releases/download/${PLIST_VER}/libplist-${PLIST_VER}.tar.bz2 && \
     tar xf libplist-${PLIST_VER}.tar.bz2 && \
     cd libplist-${PLIST_VER} && \
     ./configure \
-        --host=arm-kindlehf-linux-gnueabihf \
+        --host=arm-linux-gnueabihf \
         --prefix=/opt/plist-arm \
         --enable-static \
         --disable-shared \
         --without-cython \
-        CC=arm-kindlehf-linux-gnueabihf-gcc \
-        CXX=arm-kindlehf-linux-gnueabihf-g++ \
+        CC=arm-linux-gnueabihf-gcc \
+        CXX=arm-linux-gnueabihf-g++ \
         CFLAGS="${HF_CFLAGS}" \
         CXXFLAGS="${HF_CFLAGS}" && \
     make -j$(nproc) && \
     make install && \
     cd .. && rm -rf libplist-${PLIST_VER} libplist-${PLIST_VER}.tar.bz2
 
-# ── Build minimal ARM static ffmpeg ──────────────────────────────
+# ── Build minimal ARM static ffmpeg (via apt's gcc-arm-linux-gnueabihf) ──
 # Only what we need: H.264 decoder + libswscale (YUV→gray8 conversion)
 ARG FFMPEG_VER=4.4.4
 RUN wget -q https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VER}.tar.xz && \
     tar xf ffmpeg-${FFMPEG_VER}.tar.xz && \
     cd ffmpeg-${FFMPEG_VER} && \
     ./configure \
-        --cross-prefix=arm-kindlehf-linux-gnueabihf- \
+        --cross-prefix=arm-linux-gnueabihf- \
         --target-os=linux \
         --arch=arm \
         --cpu=cortex-a9 \
@@ -108,6 +119,7 @@ RUN wget -q https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VER}.tar.xz && \
 
 WORKDIR /work
 
+# Final link: koxtoolchain's kindlehf compiler (matches on-device glibc).
 CMD ["bash", "-c", \
      "make TARGET=hf build-kindle-hf/libairplay_mirror.so \
         CC_KINDLE=arm-kindlehf-linux-gnueabihf-gcc \
