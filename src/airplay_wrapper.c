@@ -651,6 +651,7 @@ int airplay_mirror_render_direct(void)
     if (hash == g_last_hash && sw == g_last_fw && sh == g_last_fh) {
         g.frame_ready = 0;
         pthread_mutex_unlock(&g.frame_mutex);
+        dbg("render_direct: skip (hash unchanged) %dx%d hash=0x%08x", sw, sh, hash);
         return 1;  /* decoded but content unchanged — skip refresh */
     }
     g_last_hash = hash;
@@ -672,6 +673,9 @@ int airplay_mirror_render_direct(void)
     int dh = (int)(eff_h * scale);
     int ox = (g_fb_w - dw) / 2;
     int oy = (g_fb_h - dh) / 2;
+
+    dbg("render_direct: geometry sw=%d sh=%d rotate=%d eff_w=%d eff_h=%d dw=%d dh=%d ox=%d oy=%d fb=%dx%d",
+        sw, sh, rotate, eff_w, eff_h, dw, dh, ox, oy, g_fb_w, g_fb_h);
 
     /* Clear fb to white */
     for (int y = 0; y < g_fb_h; y++)
@@ -717,6 +721,7 @@ int airplay_mirror_render_direct(void)
             time_t now = time(NULL);
             if ((now - g_last_forced_refresh) < GHOST_CLEAR_INTERVAL) {
                 memcpy(g_last_fb, fb, g_fb_size);
+                dbg("render_direct: skip (rows unchanged, cooldown)");
                 return 1;  /* truly static — skip */
             }
             /* Fall through: content unchanged but ghost-clear interval elapsed.
@@ -743,6 +748,8 @@ int airplay_mirror_render_direct(void)
     } while (upd_rc < 0 && errno == EINTR);
     if (upd_rc < 0)
         dbg("render_direct: ioctl failed errno=%d (%s)", errno, strerror(errno));
+    else
+        dbg("render_direct: ioctl OK, refresh sent (%dx%d full GC16)", g_fb_w, g_fb_h);
 
     g_last_forced_refresh = time(NULL);  /* reset ghost-clear clock on real refresh */
 
