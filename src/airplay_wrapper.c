@@ -305,11 +305,18 @@ static void dbg(const char *fmt, ...) {
 
 /* ─── video_process callback ───────────────────────────────────── */
 
+static uint64_t g_pkt_count = 0;
+
 static void cb_video_process(void *cls, raop_ntp_t *ntp,
                              video_decode_struct *data)
 {
     (void)cls; (void)ntp;
     if (!data || !data->data || data->data_len <= 0) return;
+
+    g_pkt_count++;
+    if (g_pkt_count == 1 || g_pkt_count % 300 == 0)
+        dbg("video_process: packets_seen=%llu last_len=%d",
+            (unsigned long long)g_pkt_count, data->data_len);
 
     /* Skip decode entirely if render window hasn't arrived yet.
      * Saves ~98% of ffmpeg CPU at 0.5 FPS vs 30 FPS stream. */
@@ -323,9 +330,16 @@ static void cb_video_process(void *cls, raop_ntp_t *ntp,
 
     int ret = avcodec_send_packet(av_ctx, pkt);
     av_packet_free(&pkt);
-    if (ret < 0) return;
+    if (ret < 0) {
+        char errbuf[128];
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        dbg("video_process: avcodec_send_packet failed ret=%d (%s)", ret, errbuf);
+        return;
+    }
 
+    int got_frame = 0;
     while (avcodec_receive_frame(av_ctx, av_frame) == 0) {
+        got_frame = 1;
         int w = av_frame->width, h = av_frame->height;
         if (w <= 0 || h <= 0) continue;
 
@@ -354,10 +368,14 @@ static void cb_video_process(void *cls, raop_ntp_t *ntp,
         g.frame_ready = 1;
         pthread_mutex_unlock(&g.frame_mutex);
 
+        dbg("video_process: decoded frame %dx%d", w, h);
+
         /* Gate: next decode allowed after DECODE_INTERVAL seconds */
         g_next_decode = mono_sec() + DECODE_INTERVAL;
         break;  /* one frame per window is enough */
     }
+    if (!got_frame)
+        dbg("video_process: send_packet OK but no frame produced yet (len=%d)", data->data_len);
 }
 
 static void cb_raop_log(void *cls, int level, const char *msg)
