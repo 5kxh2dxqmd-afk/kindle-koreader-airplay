@@ -400,7 +400,7 @@ int airplay_mirror_start(const airplay_config_t *cfg)
     const char *name = cfg->device_name ? cfg->device_name : "KindleAirPlay";
     int err = 0;
     dbg("step: dnssd_init name=%s", name);
-    g.dnssd = dnssd_init(name, (int)strlen(name), (const char *)hw, 6, &err, 0);
+    g.dnssd = dnssd_init(name, (int)strlen(name), (const char *)hw, 6, 0, &err);
     if (!g.dnssd) { dbg("dnssd_init failed err=%d",err); return -1; }
     dbg("step: dnssd_init OK");
 
