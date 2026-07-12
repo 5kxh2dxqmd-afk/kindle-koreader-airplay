@@ -584,8 +584,10 @@ static int fb_init(void)
 
     struct fb_var_screeninfo vinfo;
     struct fb_fix_screeninfo finfo;
-    if (ioctl(g_fb_fd, FBIOGET_VSCREENINFO, &vinfo) < 0 ||
-        ioctl(g_fb_fd, FBIOGET_FSCREENINFO, &finfo) < 0) {
+    int vrc, frc;
+    do { vrc = ioctl(g_fb_fd, FBIOGET_VSCREENINFO, &vinfo); } while (vrc < 0 && errno == EINTR);
+    do { frc = ioctl(g_fb_fd, FBIOGET_FSCREENINFO, &finfo); } while (frc < 0 && errno == EINTR);
+    if (vrc < 0 || frc < 0) {
         dbg("fb_init: ioctl failed: %s", strerror(errno));
         close(g_fb_fd); g_fb_fd = -1; return -1;
     }
@@ -735,7 +737,11 @@ int airplay_mirror_render_direct(void)
     upd.update_mode          = UPDATE_MODE_FULL;
     upd.temp                 = TEMP_USE_AUTO;
 
-    if (ioctl(g_fb_fd, MXCFB_SEND_UPDATE, &upd) < 0)
+    int upd_rc;
+    do {
+        upd_rc = ioctl(g_fb_fd, MXCFB_SEND_UPDATE, &upd);
+    } while (upd_rc < 0 && errno == EINTR);
+    if (upd_rc < 0)
         dbg("render_direct: ioctl failed errno=%d (%s)", errno, strerror(errno));
 
     g_last_forced_refresh = time(NULL);  /* reset ghost-clear clock on real refresh */
