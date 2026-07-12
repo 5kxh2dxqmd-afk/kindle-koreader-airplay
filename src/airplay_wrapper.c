@@ -585,8 +585,9 @@ static int fb_init(void)
     struct fb_var_screeninfo vinfo;
     struct fb_fix_screeninfo finfo;
     int vrc, frc;
-    do { vrc = ioctl(g_fb_fd, FBIOGET_VSCREENINFO, &vinfo); } while (vrc < 0 && errno == EINTR);
-    do { frc = ioctl(g_fb_fd, FBIOGET_FSCREENINFO, &finfo); } while (frc < 0 && errno == EINTR);
+    int retries;
+    retries = 0; do { vrc = ioctl(g_fb_fd, FBIOGET_VSCREENINFO, &vinfo); } while (vrc < 0 && errno == EINTR && ++retries < 20);
+    retries = 0; do { frc = ioctl(g_fb_fd, FBIOGET_FSCREENINFO, &finfo); } while (frc < 0 && errno == EINTR && ++retries < 20);
     if (vrc < 0 || frc < 0) {
         dbg("fb_init: ioctl failed: %s", strerror(errno));
         close(g_fb_fd); g_fb_fd = -1; return -1;
@@ -743,11 +744,12 @@ int airplay_mirror_render_direct(void)
     upd.temp                 = TEMP_USE_AUTO;
 
     int upd_rc;
+    int upd_retries = 0;
     do {
         upd_rc = ioctl(g_fb_fd, MXCFB_SEND_UPDATE, &upd);
-    } while (upd_rc < 0 && errno == EINTR);
+    } while (upd_rc < 0 && errno == EINTR && ++upd_retries < 20);
     if (upd_rc < 0)
-        dbg("render_direct: ioctl failed errno=%d (%s)", errno, strerror(errno));
+        dbg("render_direct: ioctl failed errno=%d (%s) after %d retries", errno, strerror(errno), upd_retries);
     else
         dbg("render_direct: ioctl OK, refresh sent (%dx%d full GC16)", g_fb_w, g_fb_h);
 
