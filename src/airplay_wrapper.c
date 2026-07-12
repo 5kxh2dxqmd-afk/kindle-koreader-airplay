@@ -427,7 +427,7 @@ int airplay_mirror_start(const airplay_config_t *cfg)
     dbg("step: raop_init OK");
 
     raop_set_log_callback(g.raop, cb_raop_log, NULL);
-    raop_set_log_level(g.raop, LOGGER_INFO);
+    raop_set_log_level(g.raop, LOGGER_DEBUG);
 
     /* raop_init2: nohold=0 (single client), device_id, keyfile persists Ed25519 key */
     char device_id[18] = "AA:BB:CC:DD:EE:FF";
