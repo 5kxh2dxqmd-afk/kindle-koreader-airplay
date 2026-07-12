@@ -34,6 +34,7 @@ void __wrap_llhttp_init(llhttp_t *parser, llhttp_type_t type,
 #include <stdarg.h>
 #include <errno.h>
 #include <pthread.h>
+#include <signal.h>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -575,6 +576,21 @@ int airplay_mirror_render_to_fb(uint8_t *fb, int fb_w, int fb_h, int fb_stride)
     return ret;
 }
 
+/* Run ioctl() with all signals blocked for the duration of the call, so a
+ * frequent/periodic signal (from any of the pthreads this library spawns,
+ * or from KOReader itself) can never EINTR-interrupt a slow blocking eink
+ * ioctl mid-flight. Any signal that arrives while blocked is simply held
+ * pending and delivered right after we restore the mask. */
+static int ioctl_nointr(int fd, unsigned long req, void *arg)
+{
+    sigset_t full, old;
+    sigfillset(&full);
+    pthread_sigmask(SIG_BLOCK, &full, &old);
+    int rc = ioctl(fd, req, arg);
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    return rc;
+}
+
 static int fb_init(void)
 {
     if (g_fb_fd >= 0) return 0;
@@ -584,10 +600,8 @@ static int fb_init(void)
 
     struct fb_var_screeninfo vinfo;
     struct fb_fix_screeninfo finfo;
-    int vrc, frc;
-    int retries;
-    retries = 0; do { vrc = ioctl(g_fb_fd, FBIOGET_VSCREENINFO, &vinfo); } while (vrc < 0 && errno == EINTR && ++retries < 20);
-    retries = 0; do { frc = ioctl(g_fb_fd, FBIOGET_FSCREENINFO, &finfo); } while (frc < 0 && errno == EINTR && ++retries < 20);
+    int vrc = ioctl_nointr(g_fb_fd, FBIOGET_VSCREENINFO, &vinfo);
+    int frc = ioctl_nointr(g_fb_fd, FBIOGET_FSCREENINFO, &finfo);
     if (vrc < 0 || frc < 0) {
         dbg("fb_init: ioctl failed: %s", strerror(errno));
         close(g_fb_fd); g_fb_fd = -1; return -1;
@@ -743,13 +757,9 @@ int airplay_mirror_render_direct(void)
     upd.update_mode          = UPDATE_MODE_FULL;
     upd.temp                 = TEMP_USE_AUTO;
 
-    int upd_rc;
-    int upd_retries = 0;
-    do {
-        upd_rc = ioctl(g_fb_fd, MXCFB_SEND_UPDATE, &upd);
-    } while (upd_rc < 0 && errno == EINTR && ++upd_retries < 20);
+    int upd_rc = ioctl_nointr(g_fb_fd, MXCFB_SEND_UPDATE, &upd);
     if (upd_rc < 0)
-        dbg("render_direct: ioctl failed errno=%d (%s) after %d retries", errno, strerror(errno), upd_retries);
+        dbg("render_direct: ioctl failed errno=%d (%s)", errno, strerror(errno));
     else
         dbg("render_direct: ioctl OK, refresh sent (%dx%d full GC16)", g_fb_w, g_fb_h);
 
