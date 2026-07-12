@@ -44,6 +44,20 @@ RUN wget -q https://github.com/koreader/koxtoolchain/releases/download/${KOXTC_V
     mkdir -p /opt/x-tools && \
     tar xf kindlehf.tar.gz -C /opt/x-tools && \
     rm kindlehf.tar.gz
+# Don't hardcode the internal layout of the tarball (it's bitten us before) --
+# find the real gcc/strip binaries wherever they actually landed and symlink
+# them to stable, known paths. Fails loudly with a directory listing if the
+# toolchain genuinely isn't there, instead of a mysterious ENOENT much later
+# at the final link step.
+RUN REAL_GCC=$(find /opt/x-tools -type f -name 'arm-kindlehf-linux-gnueabihf-gcc' | head -1) && \
+    if [ -z "$REAL_GCC" ]; then \
+        echo "ERROR: arm-kindlehf-linux-gnueabihf-gcc not found under /opt/x-tools. Actual layout:"; \
+        find /opt/x-tools -maxdepth 5; \
+        exit 1; \
+    fi && \
+    echo "Found kindlehf gcc at: $REAL_GCC" && \
+    ln -sf "$REAL_GCC" /opt/kindlehf-gcc && \
+    ln -sf "$(dirname "$REAL_GCC")/arm-kindlehf-linux-gnueabihf-strip" /opt/kindlehf-strip
 ENV PATH="/opt/x-tools/arm-kindlehf-linux-gnueabihf/bin:${PATH}"
 
 ARG HF_CFLAGS="-march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard -fPIC"
@@ -125,8 +139,8 @@ WORKDIR /work
 # do a PATH search the way a real shell would.
 CMD ["bash", "-c", \
      "make TARGET=hf build-kindle-hf/libairplay_mirror.so \
-        CC_KINDLE=/opt/x-tools/arm-kindlehf-linux-gnueabihf/bin/arm-kindlehf-linux-gnueabihf-gcc \
-        STRIP_K=/opt/x-tools/arm-kindlehf-linux-gnueabihf/bin/arm-kindlehf-linux-gnueabihf-strip \
+        CC_KINDLE=/opt/kindlehf-gcc \
+        STRIP_K=/opt/kindlehf-strip \
         FF_CFLAGS='-I/opt/ffmpeg-arm/include' \
         FF_LDFLAGS='/opt/ffmpeg-arm/lib/libavcodec.a /opt/ffmpeg-arm/lib/libswscale.a /opt/ffmpeg-arm/lib/libavutil.a -lm' \
         OPENSSL_CFLAGS='-I/opt/openssl-arm/include' \

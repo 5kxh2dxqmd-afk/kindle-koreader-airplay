@@ -80,7 +80,7 @@ ifeq ($(TARGET),hf)
   # fcntl64/getentropy@GLIBC_2.17 shims in src/compat_glibc.c are needed
   # or wanted here — that file is SF-only.
   SRC        := $(SRC_COMMON)
-  ARM_CFLAGS := -march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard -mthumb -flax-vector-conversions
+  ARM_CFLAGS := -march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard -flax-vector-conversions
 
   ifdef KOXTC
     CC_KINDLE := $(KOXTC)/arm-kindlehf-linux-gnueabihf-gcc
