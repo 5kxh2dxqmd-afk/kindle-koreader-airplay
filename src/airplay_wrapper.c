@@ -446,7 +446,7 @@ int airplay_mirror_start(const airplay_config_t *cfg)
     dbg("step: raop_init OK");
 
     raop_set_log_callback(g.raop, cb_raop_log, NULL);
-    raop_set_log_level(g.raop, LOGGER_DEBUG);
+    raop_set_log_level(g.raop, LOGGER_INFO);
 
     /* raop_init2: nohold=0 (single client), device_id, keyfile persists Ed25519 key */
     char device_id[18] = "AA:BB:CC:DD:EE:FF";
@@ -586,7 +586,10 @@ static int ioctl_nointr(int fd, unsigned long req, void *arg)
     sigset_t full, old;
     sigfillset(&full);
     pthread_sigmask(SIG_BLOCK, &full, &old);
-    int rc = ioctl(fd, req, arg);
+    int rc, tries = 0;
+    do {
+        rc = ioctl(fd, req, arg);
+    } while (rc < 0 && errno == EINTR && ++tries < 100);
     pthread_sigmask(SIG_SETMASK, &old, NULL);
     return rc;
 }
@@ -669,9 +672,6 @@ int airplay_mirror_render_direct(void)
         dbg("render_direct: skip (hash unchanged) %dx%d hash=0x%08x", sw, sh, hash);
         return 1;  /* decoded but content unchanged — skip refresh */
     }
-    g_last_hash = hash;
-    g_last_fw   = sw;
-    g_last_fh   = sh;
 
     uint8_t *fb = (uint8_t *)g_fb_mmap;
 
@@ -740,9 +740,9 @@ int airplay_mirror_render_direct(void)
                 return 1;  /* truly static — skip */
             }
             /* Fall through: content unchanged but ghost-clear interval elapsed.
-             * Re-flash the screen to clear accumulated eink ghosting. */
+             * Re-flash the screen to clear accumulated eink ghosting.
+             * (Cooldown timer is only reset on ioctl success, below.) */
             dbg("render_direct: ghost-clear refresh (static content)");
-            g_last_forced_refresh = now;
         }
     }
 
@@ -758,11 +758,16 @@ int airplay_mirror_render_direct(void)
     upd.temp                 = TEMP_USE_AUTO;
 
     int upd_rc = ioctl_nointr(g_fb_fd, MXCFB_SEND_UPDATE, &upd);
-    if (upd_rc < 0)
-        dbg("render_direct: ioctl failed errno=%d (%s)", errno, strerror(errno));
-    else
-        dbg("render_direct: ioctl OK, refresh sent (%dx%d full GC16)", g_fb_w, g_fb_h);
+    if (upd_rc < 0) {
+        dbg("render_direct: ioctl failed errno=%d (%s) — NOT committing dedup state, will retry next frame",
+            errno, strerror(errno));
+        return -1;
+    }
+    dbg("render_direct: ioctl OK, refresh sent (%dx%d full GC16)", g_fb_w, g_fb_h);
 
+    g_last_hash = hash;
+    g_last_fw   = sw;
+    g_last_fh   = sh;
     g_last_forced_refresh = time(NULL);  /* reset ghost-clear clock on real refresh */
 
     /* Copy current fb into g_last_fb for next comparison */
