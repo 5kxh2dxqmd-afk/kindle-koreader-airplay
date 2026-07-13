@@ -47,8 +47,14 @@ void __wrap_llhttp_init(llhttp_t *parser, llhttp_type_t type,
 #include <sys/mman.h>
 #include <linux/fb.h>
 
-/* Kindle EPDC v2 mxcfb structures (Paperwhite 3+, Oasis, Voyage).
- * 72-byte struct → MXCFB_SEND_UPDATE = 0x4048462E */
+/* Kindle EPDC mxcfb structures — standard (non-Zelda/non-Rex) layout.
+ * Confirmed directly against this exact device (kernel 5.15.41-lab126) via
+ * KOReader's own ffi-cdecl-generated /mnt/us/koreader/ffi/mxcfb_kindle_h.lua:
+ *   struct mxcfb_update_data is 72 bytes → MXCFB_SEND_UPDATE = 1078478382
+ * NOTE: this differs from the Zelda (Oasis 2/3) and Rex (PW4/KT4) variants,
+ * which insert dither_mode/quant_bit instead of the two hist_* fields below
+ * — using the wrong one silently sends the wrong ioctl command number,
+ * since the struct size is encoded into the _IOW-generated command. */
 struct mxcfb_rect { uint32_t top, left, width, height; };
 struct mxcfb_alt_buffer_data {
     uint32_t phys_addr, width, height;
@@ -59,15 +65,15 @@ struct mxcfb_update_data {
     uint32_t                     waveform_mode;
     uint32_t                     update_mode;
     uint32_t                     update_marker;
+    uint32_t                     hist_bw_waveform_mode;
+    uint32_t                     hist_gray_waveform_mode;
     int32_t                      temp;
     uint32_t                     flags;
-    int32_t                      dither_mode;
-    int32_t                      quant_bit;
     struct mxcfb_alt_buffer_data alt_buffer_data;
 };
 #define MXCFB_SEND_UPDATE   _IOW('F', 0x2E, struct mxcfb_update_data)
 #define WAVEFORM_MODE_GC16  2
-#define WAVEFORM_MODE_A2    6
+#define WAVEFORM_MODE_A2    4
 #define UPDATE_MODE_PARTIAL 0
 #define UPDATE_MODE_FULL    1
 #define TEMP_USE_AUTO       0x1000
