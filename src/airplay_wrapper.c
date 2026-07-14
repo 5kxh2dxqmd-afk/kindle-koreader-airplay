@@ -35,6 +35,7 @@ void __wrap_llhttp_init(llhttp_t *parser, llhttp_type_t type,
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
+#include <time.h>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -565,26 +566,42 @@ int airplay_mirror_render_to_fb(uint8_t *fb, int fb_w, int fb_h, int fb_stride)
     int sw = g.frame_w, sh = g.frame_h;
     uint8_t *src = g.frame_buf;
 
-    /* Nearest-neighbor scale, letterbox/pillarbox centre */
-    float scale = (float)fb_w / sw;
-    if ((float)fb_h / sh < scale) scale = (float)fb_h / sh;
-    int dw = (int)(sw * scale);
-    int dh = (int)(sh * scale);
+    /* Auto-detect need to rotate: mirrored source is landscape, target
+     * canvas (whatever KOReader currently reports for Screen.bb) is
+     * portrait, or vice versa. */
+    int rotate = (sw > sh) && (fb_w < fb_h);
+    int eff_w  = rotate ? sh : sw;
+    int eff_h  = rotate ? sw : sh;
+
+    float scale = (float)fb_w / eff_w;
+    if ((float)fb_h / eff_h < scale) scale = (float)fb_h / eff_h;
+    int dw = (int)(eff_w * scale);
+    int dh = (int)(eff_h * scale);
     int ox = (fb_w - dw) / 2;
     int oy = (fb_h - dh) / 2;
 
-    /* Fill white */
-    for (int y = 0; y < fb_h; y++)
-        memset(fb + y * fb_stride, 0xFF, fb_stride);
+    dbg("render_to_fb: geometry sw=%d sh=%d rotate=%d eff_w=%d eff_h=%d dw=%d dh=%d ox=%d oy=%d fb=%dx%d stride=%d",
+        sw, sh, rotate, eff_w, eff_h, dw, dh, ox, oy, fb_w, fb_h, fb_stride);
 
-    /* Scale region */
+    /* Fill white — assumes 1 byte/pixel (BB8/Y8), caller must verify bpp */
+    for (int y = 0; y < fb_h; y++)
+        memset(fb + (size_t)y * fb_stride, 0xFF, (size_t)fb_w);
+
+    /* Scale (+ optional rotate) into fb */
     for (int y = 0; y < dh; y++) {
-        int sy = (int)((y * sh) / dh);
-        uint8_t *dst_row = fb + (oy + y) * fb_stride + ox;
-        uint8_t *src_row = src + sy * sw;
+        int ry = y * eff_h / dh;
+        uint8_t *dst_row = fb + (size_t)(oy + y) * fb_stride + (size_t)ox;
         for (int x = 0; x < dw; x++) {
-            int sx = (int)((x * sw) / dw);
-            dst_row[x] = src_row[sx];
+            int rx = x * eff_w / dw;
+            int src_x, src_y;
+            if (rotate) {
+                src_x = ry;          /* CW: input x = rotated y */
+                src_y = sh - 1 - rx; /* CW: input y = sh-1 - rotated x */
+            } else {
+                src_x = rx;
+                src_y = ry;
+            }
+            dst_row[x] = src[src_y * sw + src_x];
         }
     }
 
@@ -608,6 +625,61 @@ static int ioctl_nointr(int fd, unsigned long req, void *arg)
     do {
         rc = ioctl(fd, req, arg);
     } while (rc < 0 && errno == EINTR && ++tries < 100);
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    return rc;
+}
+
+/* Watchdog for ioctl_timeout below: sleeps, then — only if the ioctl is
+ * still outstanding — signals the calling thread with SIGUSR2 so a
+ * misbehaving/hung wait can never freeze KOReader's UI thread forever. */
+struct ioctl_watchdog_args { pthread_t target; volatile int *done; int timeout_ms; };
+static void ioctl_watchdog_noop_handler(int sig) { (void)sig; }
+static void *ioctl_watchdog_run(void *arg_)
+{
+    struct ioctl_watchdog_args *a = (struct ioctl_watchdog_args *)arg_;
+    struct timespec ts = { a->timeout_ms / 1000, (a->timeout_ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+    if (!*a->done) {
+        dbg("ioctl_timeout: watchdog firing after %dms, interrupting hung call", a->timeout_ms);
+        pthread_kill(a->target, SIGUSR2);
+    }
+    return NULL;
+}
+
+/* Like ioctl_nointr, but bounded to timeout_ms: SIGUSR2 is left unblocked
+ * (everything else stays blocked) so only our own watchdog can break the
+ * wait — a hang here fails safe instead of locking up the whole app. */
+static int ioctl_timeout(int fd, unsigned long req, void *arg, int timeout_ms)
+{
+    static int handler_installed = 0;
+    if (!handler_installed) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = ioctl_watchdog_noop_handler;
+        sigaction(SIGUSR2, &sa, NULL);
+        handler_installed = 1;
+    }
+
+    sigset_t full, old;
+    sigfillset(&full);
+    sigdelset(&full, SIGUSR2);
+    pthread_sigmask(SIG_BLOCK, &full, &old);
+
+    volatile int done = 0;
+    struct ioctl_watchdog_args wd = { pthread_self(), &done, timeout_ms };
+    pthread_t wd_tid;
+    int have_wd = (pthread_create(&wd_tid, NULL, ioctl_watchdog_run, &wd) == 0);
+
+    int rc, tries = 0;
+    do {
+        rc = ioctl(fd, req, arg);
+    } while (rc < 0 && errno == EINTR && ++tries < 100);
+
+    done = 1;
+    if (have_wd) {
+        pthread_kill(wd_tid, SIGUSR2);  /* wake it early if it's still sleeping */
+        pthread_join(wd_tid, NULL);
+    }
     pthread_sigmask(SIG_SETMASK, &old, NULL);
     return rc;
 }
@@ -784,12 +856,12 @@ int airplay_mirror_render_direct(void)
      * the EINTR on every single call. */
     if (g_update_marker != 0) {
         uint32_t prev = g_update_marker;
-        int src = ioctl_nointr(g_fb_fd, MXCFB_WAIT_FOR_UPDATE_SUBMISSION, &prev);
+        int src = ioctl_timeout(g_fb_fd, MXCFB_WAIT_FOR_UPDATE_SUBMISSION, &prev, 2000);
         if (src < 0)
             dbg("render_direct: WAIT_FOR_UPDATE_SUBMISSION failed errno=%d (%s)", errno, strerror(errno));
 
         struct mxcfb_update_marker_data mrk = { .update_marker = prev, .collision_test = 0 };
-        int wrc = ioctl_nointr(g_fb_fd, MXCFB_WAIT_FOR_UPDATE_COMPLETE, &mrk);
+        int wrc = ioctl_timeout(g_fb_fd, MXCFB_WAIT_FOR_UPDATE_COMPLETE, &mrk, 2000);
         if (wrc < 0)
             dbg("render_direct: WAIT_FOR_UPDATE_COMPLETE failed errno=%d (%s)", errno, strerror(errno));
     }
@@ -797,7 +869,7 @@ int airplay_mirror_render_direct(void)
     if (++g_update_marker == 0) g_update_marker = 1;  /* never let marker be 0 */
     upd.update_marker = g_update_marker;
 
-    int upd_rc = ioctl_nointr(g_fb_fd, MXCFB_SEND_UPDATE, &upd);
+    int upd_rc = ioctl_timeout(g_fb_fd, MXCFB_SEND_UPDATE, &upd, 3000);
     if (upd_rc < 0) {
         dbg("render_direct: ioctl failed errno=%d (%s) — NOT committing dedup state, will retry next frame",
             errno, strerror(errno));
