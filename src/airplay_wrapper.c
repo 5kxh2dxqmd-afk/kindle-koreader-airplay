@@ -72,8 +72,19 @@ struct mxcfb_update_data {
     struct mxcfb_alt_buffer_data alt_buffer_data;
 };
 #define MXCFB_SEND_UPDATE   _IOW('F', 0x2E, struct mxcfb_update_data)
+#define WAVEFORM_MODE_DU    1
 #define WAVEFORM_MODE_GC16  2
 #define WAVEFORM_MODE_A2    4
+
+/* KOReader's Kindle refresh protocol (framebuffer_mxcfb.lua): before
+ * submitting a new full/GC16 update, wait for submission AND completion of
+ * the *previous* update marker. Skipping this is the difference between our
+ * code and KOReader's working implementation — this device is REAGL/Carta
+ * class (modern kernel, isREAGL() true), confirmed via the exact ioctl
+ * constants baked into /mnt/us/koreader/ffi/mxcfb_kindle_h.lua on-device. */
+struct mxcfb_update_marker_data { uint32_t update_marker; uint32_t collision_test; };
+#define MXCFB_WAIT_FOR_UPDATE_COMPLETE    _IOWR('F', 0x2F, struct mxcfb_update_marker_data)
+#define MXCFB_WAIT_FOR_UPDATE_SUBMISSION  _IOW('F', 0x37, uint32_t)
 #define UPDATE_MODE_PARTIAL 0
 #define UPDATE_MODE_FULL    1
 #define TEMP_USE_AUTO       0x1000
@@ -289,6 +300,7 @@ static int    g_fb_bpp    = 1;
 
 /* Last-rendered frame identity for dedup */
 static uint32_t g_last_hash = 0;
+static uint32_t g_update_marker = 0;  /* 0 = no previous update yet */
 static int      g_last_fw   = 0;
 static int      g_last_fh   = 0;
 
@@ -762,6 +774,28 @@ int airplay_mirror_render_direct(void)
     upd.waveform_mode        = WAVEFORM_MODE_GC16;
     upd.update_mode          = UPDATE_MODE_FULL;
     upd.temp                 = TEMP_USE_AUTO;
+    /* Matches KOReader's refresh_k51 for waveform_mode == GC16 */
+    upd.hist_bw_waveform_mode   = WAVEFORM_MODE_DU;
+    upd.hist_gray_waveform_mode = WAVEFORM_MODE_GC16;
+
+    /* KOReader always waits for submission + completion of the *previous*
+     * marker before a new full/GC16 update — this is Kindle-specific
+     * protocol the EPDC driver expects; skipping it is what was producing
+     * the EINTR on every single call. */
+    if (g_update_marker != 0) {
+        uint32_t prev = g_update_marker;
+        int src = ioctl_nointr(g_fb_fd, MXCFB_WAIT_FOR_UPDATE_SUBMISSION, &prev);
+        if (src < 0)
+            dbg("render_direct: WAIT_FOR_UPDATE_SUBMISSION failed errno=%d (%s)", errno, strerror(errno));
+
+        struct mxcfb_update_marker_data mrk = { .update_marker = prev, .collision_test = 0 };
+        int wrc = ioctl_nointr(g_fb_fd, MXCFB_WAIT_FOR_UPDATE_COMPLETE, &mrk);
+        if (wrc < 0)
+            dbg("render_direct: WAIT_FOR_UPDATE_COMPLETE failed errno=%d (%s)", errno, strerror(errno));
+    }
+
+    if (++g_update_marker == 0) g_update_marker = 1;  /* never let marker be 0 */
+    upd.update_marker = g_update_marker;
 
     int upd_rc = ioctl_nointr(g_fb_fd, MXCFB_SEND_UPDATE, &upd);
     if (upd_rc < 0) {
