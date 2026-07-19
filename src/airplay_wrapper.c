@@ -48,14 +48,9 @@ void __wrap_llhttp_init(llhttp_t *parser, llhttp_type_t type,
 #include <sys/mman.h>
 #include <linux/fb.h>
 
-/* Kindle EPDC mxcfb structures — standard (non-Zelda/non-Rex) layout.
- * Confirmed directly against this exact device (kernel 5.15.41-lab126) via
- * KOReader's own ffi-cdecl-generated /mnt/us/koreader/ffi/mxcfb_kindle_h.lua:
- *   struct mxcfb_update_data is 72 bytes → MXCFB_SEND_UPDATE = 1078478382
- * NOTE: this differs from the Zelda (Oasis 2/3) and Rex (PW4/KT4) variants,
- * which insert dither_mode/quant_bit instead of the two hist_* fields below
- * — using the wrong one silently sends the wrong ioctl command number,
- * since the struct size is encoded into the _IOW-generated command. */
+/* Kindle EPDC mxcfb structures. The SEND_UPDATE ioctl encodes sizeof(struct),
+ * and Lab126 has shipped several Kindle-specific layouts. Try the same family
+ * split KOReader uses instead of assuming one model. */
 struct mxcfb_rect { uint32_t top, left, width, height; };
 struct mxcfb_alt_buffer_data {
     uint32_t phys_addr, width, height;
@@ -72,10 +67,61 @@ struct mxcfb_update_data {
     uint32_t                     flags;
     struct mxcfb_alt_buffer_data alt_buffer_data;
 };
-#define MXCFB_SEND_UPDATE   _IOW('F', 0x2E, struct mxcfb_update_data)
+struct mxcfb_update_data_rex {
+    struct mxcfb_rect            update_region;
+    uint32_t                     waveform_mode;
+    uint32_t                     update_mode;
+    uint32_t                     update_marker;
+    int32_t                      temp;
+    uint32_t                     flags;
+    int32_t                      dither_mode;
+    int32_t                      quant_bit;
+    struct mxcfb_alt_buffer_data alt_buffer_data;
+    uint32_t                     hist_bw_waveform_mode;
+    uint32_t                     hist_gray_waveform_mode;
+};
+struct mxcfb_update_data_zelda {
+    struct mxcfb_rect            update_region;
+    uint32_t                     waveform_mode;
+    uint32_t                     update_mode;
+    uint32_t                     update_marker;
+    int32_t                      temp;
+    uint32_t                     flags;
+    int32_t                      dither_mode;
+    int32_t                      quant_bit;
+    struct mxcfb_alt_buffer_data alt_buffer_data;
+    uint32_t                     hist_bw_waveform_mode;
+    uint32_t                     hist_gray_waveform_mode;
+    uint32_t                     ts_pxp;
+    uint32_t                     ts_epdc;
+};
+struct mxcfb_swipe_data { uint32_t direction, steps; };
+struct mxcfb_update_data_mtk {
+    struct mxcfb_rect            update_region;
+    uint32_t                     waveform_mode;
+    uint32_t                     update_mode;
+    uint32_t                     update_marker;
+    int32_t                      temp;
+    uint32_t                     flags;
+    int32_t                      dither_mode;
+    int32_t                      quant_bit;
+    struct mxcfb_alt_buffer_data alt_buffer_data;
+    struct mxcfb_swipe_data      swipe_data;
+    uint32_t                     hist_bw_waveform_mode;
+    uint32_t                     hist_gray_waveform_mode;
+    uint32_t                     ts_pxp;
+    uint32_t                     ts_epdc;
+};
+#define MXCFB_SEND_UPDATE       _IOW('F', 0x2E, struct mxcfb_update_data)
+#define MXCFB_SEND_UPDATE_REX   _IOW('F', 0x2E, struct mxcfb_update_data_rex)
+#define MXCFB_SEND_UPDATE_ZELDA _IOW('F', 0x2E, struct mxcfb_update_data_zelda)
+#define MXCFB_SEND_UPDATE_MTK   _IOW('F', 0x2E, struct mxcfb_update_data_mtk)
 #define WAVEFORM_MODE_DU    1
 #define WAVEFORM_MODE_GC16  2
 #define WAVEFORM_MODE_A2    4
+#define WAVEFORM_MODE_ZELDA_GC16_FAST 2
+#define MTK_WAVEFORM_MODE_DU   1
+#define MTK_WAVEFORM_MODE_GC16 2
 
 /* KOReader's Kindle refresh protocol (framebuffer_mxcfb.lua): before
  * submitting a new full/GC16 update, wait for submission AND completion of
@@ -88,7 +134,11 @@ struct mxcfb_update_marker_data { uint32_t update_marker; uint32_t collision_tes
 #define MXCFB_WAIT_FOR_UPDATE_SUBMISSION  _IOW('F', 0x37, uint32_t)
 #define UPDATE_MODE_PARTIAL 0
 #define UPDATE_MODE_FULL    1
-#define TEMP_USE_AUTO       0x1000
+#define TEMP_USE_AMBIENT    0x1000
+#define TEMP_USE_PAPYRUS    0x1001
+#define TEMP_USE_AUTO       TEMP_USE_PAPYRUS
+#define TEMP_USE_ZELDA_AUTO TEMP_USE_AMBIENT
+#define EPDC_FLAG_USE_DITHERING_PASSTHROUGH 0
 
 #include <sys/time.h>
 #include <libavcodec/avcodec.h>
@@ -304,6 +354,15 @@ static uint32_t g_last_hash = 0;
 static uint32_t g_update_marker = 0;  /* 0 = no previous update yet */
 static int      g_last_fw   = 0;
 static int      g_last_fh   = 0;
+
+typedef enum {
+    REFRESH_VARIANT_UNKNOWN = 0,
+    REFRESH_VARIANT_K51,
+    REFRESH_VARIANT_REX,
+    REFRESH_VARIANT_ZELDA,
+    REFRESH_VARIANT_MTK,
+} refresh_variant_t;
+static refresh_variant_t g_refresh_variant = REFRESH_VARIANT_UNKNOWN;
 
 /* Last-rendered framebuffer for change-detection */
 static uint8_t *g_last_fb  = NULL;
@@ -632,7 +691,12 @@ static int ioctl_nointr(int fd, unsigned long req, void *arg)
 /* Watchdog for ioctl_timeout below: sleeps, then — only if the ioctl is
  * still outstanding — signals the calling thread with SIGUSR2 so a
  * misbehaving/hung wait can never freeze KOReader's UI thread forever. */
-struct ioctl_watchdog_args { pthread_t target; volatile int *done; int timeout_ms; };
+struct ioctl_watchdog_args {
+    pthread_t target;
+    volatile int *done;
+    volatile int *fired;
+    int timeout_ms;
+};
 static void ioctl_watchdog_noop_handler(int sig) { (void)sig; }
 static void *ioctl_watchdog_run(void *arg_)
 {
@@ -640,6 +704,7 @@ static void *ioctl_watchdog_run(void *arg_)
     struct timespec ts = { a->timeout_ms / 1000, (a->timeout_ms % 1000) * 1000000L };
     nanosleep(&ts, NULL);
     if (!*a->done) {
+        *a->fired = 1;
         dbg("ioctl_timeout: watchdog firing after %dms, interrupting hung call", a->timeout_ms);
         pthread_kill(a->target, SIGUSR2);
     }
@@ -666,14 +731,15 @@ static int ioctl_timeout(int fd, unsigned long req, void *arg, int timeout_ms)
     pthread_sigmask(SIG_BLOCK, &full, &old);
 
     volatile int done = 0;
-    struct ioctl_watchdog_args wd = { pthread_self(), &done, timeout_ms };
+    volatile int fired = 0;
+    struct ioctl_watchdog_args wd = { pthread_self(), &done, &fired, timeout_ms };
     pthread_t wd_tid;
     int have_wd = (pthread_create(&wd_tid, NULL, ioctl_watchdog_run, &wd) == 0);
 
     int rc, tries = 0;
     do {
         rc = ioctl(fd, req, arg);
-    } while (rc < 0 && errno == EINTR && ++tries < 100);
+    } while (rc < 0 && errno == EINTR && !fired && ++tries < 100);
 
     done = 1;
     if (have_wd) {
@@ -682,6 +748,124 @@ static int ioctl_timeout(int fd, unsigned long req, void *arg, int timeout_ms)
     }
     pthread_sigmask(SIG_SETMASK, &old, NULL);
     return rc;
+}
+
+static const char *refresh_variant_name(refresh_variant_t variant)
+{
+    switch (variant) {
+        case REFRESH_VARIANT_K51:   return "k51";
+        case REFRESH_VARIANT_REX:   return "rex";
+        case REFRESH_VARIANT_ZELDA: return "zelda";
+        case REFRESH_VARIANT_MTK:   return "mtk";
+        default:                    return "unknown";
+    }
+}
+
+static void fill_rect(struct mxcfb_rect *r, uint32_t w, uint32_t h)
+{
+    r->top = 0;
+    r->left = 0;
+    r->width = w;
+    r->height = h;
+}
+
+static int send_update_for_variant(refresh_variant_t variant, uint32_t marker)
+{
+    uint32_t w = (uint32_t)g_fb_w;
+    uint32_t h = (uint32_t)g_fb_h;
+
+    switch (variant) {
+        case REFRESH_VARIANT_K51: {
+            struct mxcfb_update_data upd;
+            memset(&upd, 0, sizeof(upd));
+            fill_rect(&upd.update_region, w, h);
+            upd.waveform_mode = WAVEFORM_MODE_GC16;
+            upd.update_mode = UPDATE_MODE_FULL;
+            upd.update_marker = marker;
+            upd.hist_bw_waveform_mode = WAVEFORM_MODE_DU;
+            upd.hist_gray_waveform_mode = WAVEFORM_MODE_GC16;
+            upd.temp = TEMP_USE_AUTO;
+            return ioctl_timeout(g_fb_fd, MXCFB_SEND_UPDATE, &upd, 3000);
+        }
+        case REFRESH_VARIANT_REX: {
+            struct mxcfb_update_data_rex upd;
+            memset(&upd, 0, sizeof(upd));
+            fill_rect(&upd.update_region, w, h);
+            upd.waveform_mode = WAVEFORM_MODE_ZELDA_GC16_FAST;
+            upd.update_mode = UPDATE_MODE_FULL;
+            upd.update_marker = marker;
+            upd.temp = TEMP_USE_ZELDA_AUTO;
+            upd.dither_mode = EPDC_FLAG_USE_DITHERING_PASSTHROUGH;
+            upd.quant_bit = 0;
+            upd.hist_bw_waveform_mode = WAVEFORM_MODE_DU;
+            upd.hist_gray_waveform_mode = WAVEFORM_MODE_GC16;
+            return ioctl_timeout(g_fb_fd, MXCFB_SEND_UPDATE_REX, &upd, 3000);
+        }
+        case REFRESH_VARIANT_ZELDA: {
+            struct mxcfb_update_data_zelda upd;
+            memset(&upd, 0, sizeof(upd));
+            fill_rect(&upd.update_region, w, h);
+            upd.waveform_mode = WAVEFORM_MODE_ZELDA_GC16_FAST;
+            upd.update_mode = UPDATE_MODE_FULL;
+            upd.update_marker = marker;
+            upd.temp = TEMP_USE_ZELDA_AUTO;
+            upd.dither_mode = EPDC_FLAG_USE_DITHERING_PASSTHROUGH;
+            upd.quant_bit = 0;
+            upd.hist_bw_waveform_mode = WAVEFORM_MODE_DU;
+            upd.hist_gray_waveform_mode = WAVEFORM_MODE_GC16;
+            return ioctl_timeout(g_fb_fd, MXCFB_SEND_UPDATE_ZELDA, &upd, 3000);
+        }
+        case REFRESH_VARIANT_MTK: {
+            struct mxcfb_update_data_mtk upd;
+            memset(&upd, 0, sizeof(upd));
+            fill_rect(&upd.update_region, w, h);
+            upd.waveform_mode = MTK_WAVEFORM_MODE_GC16;
+            upd.update_mode = UPDATE_MODE_FULL;
+            upd.update_marker = marker;
+            upd.temp = TEMP_USE_ZELDA_AUTO;
+            upd.dither_mode = EPDC_FLAG_USE_DITHERING_PASSTHROUGH;
+            upd.quant_bit = 0;
+            upd.hist_bw_waveform_mode = MTK_WAVEFORM_MODE_DU;
+            upd.hist_gray_waveform_mode = MTK_WAVEFORM_MODE_GC16;
+            return ioctl_timeout(g_fb_fd, MXCFB_SEND_UPDATE_MTK, &upd, 3000);
+        }
+        default:
+            errno = EINVAL;
+            return -1;
+    }
+}
+
+static int send_eink_update(uint32_t marker)
+{
+    static const refresh_variant_t variants[] = {
+        REFRESH_VARIANT_K51,
+        REFRESH_VARIANT_REX,
+        REFRESH_VARIANT_ZELDA,
+        REFRESH_VARIANT_MTK,
+    };
+
+    if (g_refresh_variant != REFRESH_VARIANT_UNKNOWN) {
+        int rc = send_update_for_variant(g_refresh_variant, marker);
+        if (rc == 0) return 0;
+        dbg("render_direct: %s update failed errno=%d (%s), re-probing",
+            refresh_variant_name(g_refresh_variant), errno, strerror(errno));
+        g_refresh_variant = REFRESH_VARIANT_UNKNOWN;
+    }
+
+    for (size_t i = 0; i < sizeof(variants) / sizeof(variants[0]); i++) {
+        int rc = send_update_for_variant(variants[i], marker);
+        if (rc == 0) {
+            g_refresh_variant = variants[i];
+            dbg("render_direct: selected %s refresh ABI",
+                refresh_variant_name(g_refresh_variant));
+            return 0;
+        }
+        dbg("render_direct: %s probe failed errno=%d (%s)",
+            refresh_variant_name(variants[i]), errno, strerror(errno));
+    }
+
+    errno = ENOTTY;
+    return -1;
 }
 
 static int fb_init(void)
@@ -732,6 +916,7 @@ static void fb_cleanup(void)
     if (g_fb_fd >= 0) { close(g_fb_fd); g_fb_fd = -1; }
     g_fb_w = g_fb_h = g_fb_stride = g_fb_bpp = 0; g_fb_size = 0;
     g_last_hash = 0; g_last_fw = 0; g_last_fh = 0;
+    g_refresh_variant = REFRESH_VARIANT_UNKNOWN;
     if (g_last_fb) { free(g_last_fb); g_last_fb = NULL; }
     g_last_fb_w = g_last_fb_h = 0;
     g_last_forced_refresh = 0;
@@ -836,25 +1021,11 @@ int airplay_mirror_render_direct(void)
         }
     }
 
-    /* Full GC16 refresh — covers entire screen so white borders don't ghost */
-    struct mxcfb_update_data upd;
-    memset(&upd, 0, sizeof(upd));
-    upd.update_region.top    = 0;
-    upd.update_region.left   = 0;
-    upd.update_region.width  = (uint32_t)g_fb_w;
-    upd.update_region.height = (uint32_t)g_fb_h;
-    upd.waveform_mode        = WAVEFORM_MODE_GC16;
-    upd.update_mode          = UPDATE_MODE_FULL;
-    upd.temp                 = TEMP_USE_AUTO;
-    /* Matches KOReader's refresh_k51 for waveform_mode == GC16 */
-    upd.hist_bw_waveform_mode   = WAVEFORM_MODE_DU;
-    upd.hist_gray_waveform_mode = WAVEFORM_MODE_GC16;
-
     /* KOReader always waits for submission + completion of the *previous*
      * marker before a new full/GC16 update — this is Kindle-specific
      * protocol the EPDC driver expects; skipping it is what was producing
      * the EINTR on every single call. */
-    if (g_update_marker != 0) {
+    if (g_update_marker != 0 && g_refresh_variant != REFRESH_VARIANT_MTK) {
         uint32_t prev = g_update_marker;
         int src = ioctl_timeout(g_fb_fd, MXCFB_WAIT_FOR_UPDATE_SUBMISSION, &prev, 2000);
         if (src < 0)
@@ -866,16 +1037,17 @@ int airplay_mirror_render_direct(void)
             dbg("render_direct: WAIT_FOR_UPDATE_COMPLETE failed errno=%d (%s)", errno, strerror(errno));
     }
 
-    if (++g_update_marker == 0) g_update_marker = 1;  /* never let marker be 0 */
-    upd.update_marker = g_update_marker;
+    uint32_t next_marker = g_update_marker + 1;
+    if (next_marker == 0) next_marker = 1;  /* never let marker be 0 */
 
-    int upd_rc = ioctl_timeout(g_fb_fd, MXCFB_SEND_UPDATE, &upd, 3000);
+    int upd_rc = send_eink_update(next_marker);
     if (upd_rc < 0) {
-        dbg("render_direct: ioctl failed errno=%d (%s) — NOT committing dedup state, will retry next frame",
-            errno, strerror(errno));
+        dbg("render_direct: all refresh ioctls failed — NOT committing dedup state, will retry next frame");
         return -1;
     }
-    dbg("render_direct: ioctl OK, refresh sent (%dx%d full GC16)", g_fb_w, g_fb_h);
+    g_update_marker = next_marker;
+    dbg("render_direct: ioctl OK via %s, refresh sent (%dx%d full GC16)",
+        refresh_variant_name(g_refresh_variant), g_fb_w, g_fb_h);
 
     g_last_hash = hash;
     g_last_fw   = sw;
