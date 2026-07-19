@@ -145,7 +145,9 @@ struct mxcfb_update_marker_data { uint32_t update_marker; uint32_t collision_tes
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 
-/* Decode only when a render is due — saves ~98% of ffmpeg CPU at 0.5 FPS */
+/* Publish only when a render is due. The H.264 decoder must still receive
+ * every packet, because later P/B frames depend on reference frames carried
+ * by packets we would otherwise drop. */
 #define DECODE_INTERVAL 1.8  /* seconds; slightly under POLL_INTERVAL_MS=2000 */
 static double g_next_decode = 0.0;
 
@@ -397,11 +399,6 @@ static void cb_video_process(void *cls, raop_ntp_t *ntp,
         dbg("video_process: packets_seen=%llu last_len=%d",
             (unsigned long long)g_pkt_count, data->data_len);
 
-    /* Skip decode entirely if render window hasn't arrived yet.
-     * Saves ~98% of ffmpeg CPU at 0.5 FPS vs 30 FPS stream. */
-    double now = mono_sec();
-    if (now < g_next_decode) return;
-
     AVPacket *pkt = av_packet_alloc();
     if (!pkt) return;
     pkt->data = data->data;
@@ -417,10 +414,18 @@ static void cb_video_process(void *cls, raop_ntp_t *ntp,
     }
 
     int got_frame = 0;
+    int publish_due = (mono_sec() >= g_next_decode);
     while (avcodec_receive_frame(av_ctx, av_frame) == 0) {
         got_frame = 1;
         int w = av_frame->width, h = av_frame->height;
-        if (w <= 0 || h <= 0) continue;
+        if (!publish_due) {
+            av_frame_unref(av_frame);
+            continue;
+        }
+        if (w <= 0 || h <= 0) {
+            av_frame_unref(av_frame);
+            continue;
+        }
 
         if (!sws || av_ctx->width != w || av_ctx->height != h) {
             if (sws) sws_freeContext(sws);
@@ -429,10 +434,16 @@ static void cb_video_process(void *cls, raop_ntp_t *ntp,
                                  w, h, AV_PIX_FMT_GRAY8,
                                  SWS_FAST_BILINEAR, NULL, NULL, NULL);
         }
-        if (!sws) continue;
+        if (!sws) {
+            av_frame_unref(av_frame);
+            continue;
+        }
 
         uint8_t *gray = malloc(w * h);
-        if (!gray) continue;
+        if (!gray) {
+            av_frame_unref(av_frame);
+            continue;
+        }
 
         uint8_t *dst[4]   = { gray, NULL, NULL, NULL };
         int      dstst[4] = { w, 0, 0, 0 };
@@ -449,11 +460,14 @@ static void cb_video_process(void *cls, raop_ntp_t *ntp,
 
         dbg("video_process: decoded frame %dx%d", w, h);
 
-        /* Gate: next decode allowed after DECODE_INTERVAL seconds */
+        /* Gate: next grayscale frame published after DECODE_INTERVAL seconds.
+         * Keep draining decoder output in the meantime so the stream stays
+         * current and its reference frames remain valid. */
         g_next_decode = mono_sec() + DECODE_INTERVAL;
-        break;  /* one frame per window is enough */
+        publish_due = 0;
+        av_frame_unref(av_frame);
     }
-    if (!got_frame)
+    if (!got_frame && (g_pkt_count == 1 || g_pkt_count % 300 == 0))
         dbg("video_process: send_packet OK but no frame produced yet (len=%d)", data->data_len);
 }
 
