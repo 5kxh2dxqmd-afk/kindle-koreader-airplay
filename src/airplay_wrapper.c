@@ -825,7 +825,16 @@ static int send_update_for_variant(refresh_variant_t variant, uint32_t marker)
             upd.temp = TEMP_USE_ZELDA_AUTO;
             upd.dither_mode = EPDC_FLAG_USE_DITHERING_PASSTHROUGH;
             upd.quant_bit = 0;
-            upd.hist_bw_waveform_mode = MTK_WAVEFORM_MODE_DU;
+            /* Don't reference the DU waveform slot here: we always request an
+             * explicit GC16 full update above, so these hist_* fields (only
+             * meaningful for the kernel's auto-waveform-history heuristic)
+             * are unused by us. On some firmware/night-mode LUT states slot 1
+             * (DU) isn't loaded and the HWTCON driver logs
+             * "waveform mode[1] not loaded" and leaves the panel on a
+             * corrupted frame even though the ioctl still returns 0. Point
+             * both hist fields at GC16 (slot 2), which is the mode we know
+             * is loaded because the main update above just used it. */
+            upd.hist_bw_waveform_mode = MTK_WAVEFORM_MODE_GC16;
             upd.hist_gray_waveform_mode = MTK_WAVEFORM_MODE_GC16;
             return ioctl_timeout(g_fb_fd, MXCFB_SEND_UPDATE_MTK, &upd, 3000);
         }
