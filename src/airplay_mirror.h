@@ -35,6 +35,10 @@ int  airplay_mirror_render_to_fb(uint8_t *fb, int fb_w, int fb_h, int fb_stride)
  * Returns 0 on success, -1 if no frame ready or fb unavailable. */
 int  airplay_mirror_render_direct(void);
 
+/* Clear /dev/fb0 to white and trigger an eink refresh before KOReader regains
+ * ownership of the display. Returns 0 on success, -1 if fb unavailable. */
+int  airplay_mirror_clear_direct(void);
+
 /* mDNS: advertise on 224.0.0.251:5353 — call in a thread or before event loop */
 int  airplay_mdns_start(const char *device_name, int port);
 void airplay_mdns_stop(void);

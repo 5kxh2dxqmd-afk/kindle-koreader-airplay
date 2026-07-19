@@ -34,6 +34,7 @@ local FULL_REFRESH_EVERY = 6
 
 local airplay_ffi   -- loaded lazily
 local running       = false
+local stopping      = false
 local partial_count = 0
 local current_bb    = nil  -- current BlitBuffer shown on screen
 
@@ -140,18 +141,38 @@ local function start_receiver()
     UIManager:scheduleIn(POLL_INTERVAL_MS / 1000.0, poll)
 end
 
-local function stop_receiver()
-    if not running then return end
+local function restore_koreader_screen()
+    UIManager:setDirty(nil, "full")
+    if UIManager.scheduleIn then
+        UIManager:scheduleIn(0.1, function()
+            UIManager:setDirty(nil, "full")
+        end)
+    end
+end
+
+local function stop_receiver(show_stopped_message)
+    if stopping then return end
+    if not running then
+        restore_koreader_screen()
+        return
+    end
+    stopping = true
     running = false
     close_firewall()
     UIManager:unschedule(poll)
-    if airplay_ffi then airplay_ffi.stop() end
+    if airplay_ffi then
+        pcall(function() airplay_ffi.clear_direct() end)
+        pcall(function() airplay_ffi.stop() end)
+    end
     if current_bb then
         current_bb:free()
         current_bb = nil
     end
-    UIManager:setDirty(nil, "full")
-    show_message(_("AirPlay stopped"))
+    restore_koreader_screen()
+    stopping = false
+    if show_stopped_message ~= false then
+        show_message(_("AirPlay stopped"))
+    end
 end
 
 -- ─── KOReader plugin hooks ────────────────────────────────────────
@@ -170,7 +191,7 @@ function AirPlayPlugin:addToMainMenu(menu_items)
                 callback = function()
                     UIManager:show(ConfirmBox:new{
                         text = _("Stop AirPlay receiver?"),
-                        ok_callback = function() stop_receiver() end,
+                        ok_callback = function() stop_receiver(true) end,
                     })
                 end,
             },
@@ -212,11 +233,11 @@ function AirPlayPlugin:addToMainMenu(menu_items)
 end
 
 function AirPlayPlugin:onCloseDocument()
-    if running then stop_receiver() end
+    if running then stop_receiver(false) end
 end
 
 function AirPlayPlugin:onExit()
-    if running then stop_receiver() end
+    if running then stop_receiver(false) end
 end
 
 return AirPlayPlugin

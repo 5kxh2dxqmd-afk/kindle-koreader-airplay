@@ -149,6 +149,7 @@ struct mxcfb_update_marker_data { uint32_t update_marker; uint32_t collision_tes
  * every packet, because later P/B frames depend on reference frames carried
  * by packets we would otherwise drop. */
 #define DECODE_INTERVAL 1.8  /* seconds; slightly under POLL_INTERVAL_MS=2000 */
+#define AIRPLAY_ADVERTISED_FPS 15
 static double g_next_decode = 0.0;
 
 static double mono_sec(void) {
@@ -317,6 +318,9 @@ static int decoder_init(void)
     av_ctx = avcodec_alloc_context3(codec);
     if (!av_ctx) return -1;
     av_ctx->thread_count = 1;          /* single-thread: Kindle is ARM single/dual core */
+    av_ctx->flags2 |= AV_CODEC_FLAG2_FAST;
+    av_ctx->skip_frame = AVDISCARD_NONREF;
+    av_ctx->skip_loop_filter = AVDISCARD_ALL;
     if (avcodec_open2(av_ctx, codec, NULL) < 0) return -1;
     av_frame = av_frame_alloc();
     return av_frame ? 0 : -1;
@@ -356,6 +360,7 @@ static uint32_t g_last_hash = 0;
 static uint32_t g_update_marker = 0;  /* 0 = no previous update yet */
 static int      g_last_fw   = 0;
 static int      g_last_fh   = 0;
+static int      g_have_rendered = 0;
 
 typedef enum {
     REFRESH_VARIANT_UNKNOWN = 0,
@@ -552,10 +557,10 @@ int airplay_mirror_start(const airplay_config_t *cfg)
     /* tell raop about display for GET /info response */
     raop_set_plist(g.raop, "width",  640);
     raop_set_plist(g.raop, "height", 480);
-    /* macOS refuses to send H264 if maxFPS<threshold or refreshRate too low.
-     * We advertise 30fps and let the Lua poll loop drop frames at 1fps. */
-    raop_set_plist(g.raop, "maxFPS", 30);
-    raop_set_plist(g.raop, "refreshRate", 30);
+    /* Ask the sender for a lower stream rate so Kindle CPU is not saturated.
+     * This is advisory; ffmpeg still discards non-reference frames above. */
+    raop_set_plist(g.raop, "maxFPS", AIRPLAY_ADVERTISED_FPS);
+    raop_set_plist(g.raop, "refreshRate", AIRPLAY_ADVERTISED_FPS);
     raop_set_plist(g.raop, "clientFPSdata", 1); /* log 0x05 plist content */
 
     unsigned short port = (unsigned short)(cfg->http_port > 0 ? cfg->http_port : 7000);
@@ -775,26 +780,27 @@ static const char *refresh_variant_name(refresh_variant_t variant)
     }
 }
 
-static void fill_rect(struct mxcfb_rect *r, uint32_t w, uint32_t h)
+static void fill_rect(struct mxcfb_rect *r,
+                      uint32_t left, uint32_t top, uint32_t w, uint32_t h)
 {
-    r->top = 0;
-    r->left = 0;
+    r->top = top;
+    r->left = left;
     r->width = w;
     r->height = h;
 }
 
-static int send_update_for_variant(refresh_variant_t variant, uint32_t marker)
+static int send_update_for_variant(refresh_variant_t variant, uint32_t marker,
+                                   uint32_t left, uint32_t top,
+                                   uint32_t w, uint32_t h,
+                                   uint32_t update_mode)
 {
-    uint32_t w = (uint32_t)g_fb_w;
-    uint32_t h = (uint32_t)g_fb_h;
-
     switch (variant) {
         case REFRESH_VARIANT_K51: {
             struct mxcfb_update_data upd;
             memset(&upd, 0, sizeof(upd));
-            fill_rect(&upd.update_region, w, h);
+            fill_rect(&upd.update_region, left, top, w, h);
             upd.waveform_mode = WAVEFORM_MODE_GC16;
-            upd.update_mode = UPDATE_MODE_FULL;
+            upd.update_mode = update_mode;
             upd.update_marker = marker;
             upd.hist_bw_waveform_mode = WAVEFORM_MODE_DU;
             upd.hist_gray_waveform_mode = WAVEFORM_MODE_GC16;
@@ -804,9 +810,9 @@ static int send_update_for_variant(refresh_variant_t variant, uint32_t marker)
         case REFRESH_VARIANT_REX: {
             struct mxcfb_update_data_rex upd;
             memset(&upd, 0, sizeof(upd));
-            fill_rect(&upd.update_region, w, h);
+            fill_rect(&upd.update_region, left, top, w, h);
             upd.waveform_mode = WAVEFORM_MODE_ZELDA_GC16_FAST;
-            upd.update_mode = UPDATE_MODE_FULL;
+            upd.update_mode = update_mode;
             upd.update_marker = marker;
             upd.temp = TEMP_USE_ZELDA_AUTO;
             upd.dither_mode = EPDC_FLAG_USE_DITHERING_PASSTHROUGH;
@@ -818,9 +824,9 @@ static int send_update_for_variant(refresh_variant_t variant, uint32_t marker)
         case REFRESH_VARIANT_ZELDA: {
             struct mxcfb_update_data_zelda upd;
             memset(&upd, 0, sizeof(upd));
-            fill_rect(&upd.update_region, w, h);
+            fill_rect(&upd.update_region, left, top, w, h);
             upd.waveform_mode = WAVEFORM_MODE_ZELDA_GC16_FAST;
-            upd.update_mode = UPDATE_MODE_FULL;
+            upd.update_mode = update_mode;
             upd.update_marker = marker;
             upd.temp = TEMP_USE_ZELDA_AUTO;
             upd.dither_mode = EPDC_FLAG_USE_DITHERING_PASSTHROUGH;
@@ -832,9 +838,9 @@ static int send_update_for_variant(refresh_variant_t variant, uint32_t marker)
         case REFRESH_VARIANT_MTK: {
             struct mxcfb_update_data_mtk upd;
             memset(&upd, 0, sizeof(upd));
-            fill_rect(&upd.update_region, w, h);
+            fill_rect(&upd.update_region, left, top, w, h);
             upd.waveform_mode = MTK_WAVEFORM_MODE_GC16;
-            upd.update_mode = UPDATE_MODE_FULL;
+            upd.update_mode = update_mode;
             upd.update_marker = marker;
             upd.temp = TEMP_USE_ZELDA_AUTO;
             upd.dither_mode = EPDC_FLAG_USE_DITHERING_PASSTHROUGH;
@@ -858,7 +864,8 @@ static int send_update_for_variant(refresh_variant_t variant, uint32_t marker)
     }
 }
 
-static int send_eink_update(uint32_t marker)
+static int send_eink_update(uint32_t marker, uint32_t left, uint32_t top,
+                            uint32_t w, uint32_t h, uint32_t update_mode)
 {
     static const refresh_variant_t variants[] = {
         REFRESH_VARIANT_K51,
@@ -868,7 +875,8 @@ static int send_eink_update(uint32_t marker)
     };
 
     if (g_refresh_variant != REFRESH_VARIANT_UNKNOWN) {
-        int rc = send_update_for_variant(g_refresh_variant, marker);
+        int rc = send_update_for_variant(g_refresh_variant, marker,
+                                         left, top, w, h, update_mode);
         if (rc == 0) return 0;
         dbg("render_direct: %s update failed errno=%d (%s), re-probing",
             refresh_variant_name(g_refresh_variant), errno, strerror(errno));
@@ -876,7 +884,8 @@ static int send_eink_update(uint32_t marker)
     }
 
     for (size_t i = 0; i < sizeof(variants) / sizeof(variants[0]); i++) {
-        int rc = send_update_for_variant(variants[i], marker);
+        int rc = send_update_for_variant(variants[i], marker,
+                                         left, top, w, h, update_mode);
         if (rc == 0) {
             g_refresh_variant = variants[i];
             dbg("render_direct: selected %s refresh ABI",
@@ -939,6 +948,7 @@ static void fb_cleanup(void)
     if (g_fb_fd >= 0) { close(g_fb_fd); g_fb_fd = -1; }
     g_fb_w = g_fb_h = g_fb_stride = g_fb_bpp = 0; g_fb_size = 0;
     g_last_hash = 0; g_last_fw = 0; g_last_fh = 0;
+    g_have_rendered = 0;
     g_refresh_variant = REFRESH_VARIANT_UNKNOWN;
     if (g_last_fb) { free(g_last_fb); g_last_fb = NULL; }
     g_last_fb_w = g_last_fb_h = 0;
@@ -1017,20 +1027,45 @@ int airplay_mirror_render_direct(void)
     g.frame_ready = 0;
     pthread_mutex_unlock(&g.frame_mutex);
 
-    /* Skip ioctl if content identical to last render.
-     * Exclude top letterbox + Mac status bar rows from comparison so clock/wifi
-     * ticks don't trigger a full refresh.  Status bar ≈ top 4% of content height. */
+    uint32_t update_left = 0;
+    uint32_t update_top = 0;
+    uint32_t update_w = (uint32_t)g_fb_w;
+    uint32_t update_h = (uint32_t)g_fb_h;
+    uint32_t update_mode = g_have_rendered ? UPDATE_MODE_PARTIAL : UPDATE_MODE_FULL;
+
+    /* Skip ioctl if content identical to last render, or shrink the refresh to
+     * the changed rectangle. Exclude top letterbox + Mac status bar rows from
+     * comparison so clock/wifi ticks don't trigger refreshes. Status bar ≈ top
+     * 4% of content height. */
     int have_baseline = (g_last_fb && g_last_fb_w == g_fb_w && g_last_fb_h == g_fb_h);
-    if (have_baseline) {
+    if (g_have_rendered && have_baseline) {
         int skip_rows = oy + dh / 25;  /* letterbox top + ~4% of content */
-        int changed = 0;
-        for (int y = skip_rows; y < g_fb_h && !changed; y++) {
+        if (skip_rows < 0) skip_rows = 0;
+        if (skip_rows > g_fb_h) skip_rows = g_fb_h;
+
+        int min_x = g_fb_w, min_y = g_fb_h, max_x = -1, max_y = -1;
+        size_t row_bytes = (size_t)(g_fb_w * g_fb_bpp);
+        for (int y = skip_rows; y < g_fb_h; y++) {
             const uint8_t *row_fb   = fb        + (size_t)y * g_fb_stride;
             const uint8_t *row_last = g_last_fb + (size_t)y * g_fb_stride;
-            if (memcmp(row_fb, row_last, (size_t)(g_fb_w * g_fb_bpp)) != 0)
-                changed = 1;
+            if (memcmp(row_fb, row_last, row_bytes) == 0)
+                continue;
+
+            int first = 0;
+            int last = (int)row_bytes - 1;
+            while (first <= last && row_fb[first] == row_last[first]) first++;
+            while (last >= first && row_fb[last] == row_last[last]) last--;
+            if (first > last) continue;
+
+            int x1 = first / g_fb_bpp;
+            int x2 = last / g_fb_bpp;
+            if (x1 < min_x) min_x = x1;
+            if (x2 > max_x) max_x = x2;
+            if (y < min_y) min_y = y;
+            if (y > max_y) max_y = y;
         }
-        if (!changed) {
+
+        if (max_x < min_x || max_y < min_y) {
             time_t now = time(NULL);
             if ((now - g_last_forced_refresh) < GHOST_CLEAR_INTERVAL) {
                 memcpy(g_last_fb, fb, g_fb_size);
@@ -1041,6 +1076,22 @@ int airplay_mirror_render_direct(void)
              * Re-flash the screen to clear accumulated eink ghosting.
              * (Cooldown timer is only reset on ioctl success, below.) */
             dbg("render_direct: ghost-clear refresh (static content)");
+            update_mode = UPDATE_MODE_FULL;
+        } else {
+            const int margin = 8;
+            if (min_x > margin) min_x -= margin; else min_x = 0;
+            if (min_y > margin) min_y -= margin; else min_y = 0;
+            max_x += margin;
+            max_y += margin;
+            if (max_x >= g_fb_w) max_x = g_fb_w - 1;
+            if (max_y >= g_fb_h) max_y = g_fb_h - 1;
+
+            update_left = (uint32_t)min_x;
+            update_top = (uint32_t)min_y;
+            update_w = (uint32_t)(max_x - min_x + 1);
+            update_h = (uint32_t)(max_y - min_y + 1);
+            dbg("render_direct: dirty rect left=%u top=%u width=%u height=%u",
+                update_left, update_top, update_w, update_h);
         }
     }
 
@@ -1063,18 +1114,22 @@ int airplay_mirror_render_direct(void)
     uint32_t next_marker = g_update_marker + 1;
     if (next_marker == 0) next_marker = 1;  /* never let marker be 0 */
 
-    int upd_rc = send_eink_update(next_marker);
+    int upd_rc = send_eink_update(next_marker, update_left, update_top,
+                                  update_w, update_h, update_mode);
     if (upd_rc < 0) {
         dbg("render_direct: all refresh ioctls failed — NOT committing dedup state, will retry next frame");
         return -1;
     }
     g_update_marker = next_marker;
-    dbg("render_direct: ioctl OK via %s, refresh sent (%dx%d full GC16)",
-        refresh_variant_name(g_refresh_variant), g_fb_w, g_fb_h);
+    dbg("render_direct: ioctl OK via %s, refresh sent mode=%s rect=%ux%u+%u+%u",
+        refresh_variant_name(g_refresh_variant),
+        update_mode == UPDATE_MODE_FULL ? "full" : "partial",
+        update_w, update_h, update_left, update_top);
 
     g_last_hash = hash;
     g_last_fw   = sw;
     g_last_fh   = sh;
+    g_have_rendered = 1;
     g_last_forced_refresh = time(NULL);  /* reset ghost-clear clock on real refresh */
 
     /* Copy current fb into g_last_fb for next comparison */
@@ -1082,6 +1137,51 @@ int airplay_mirror_render_direct(void)
         memcpy(g_last_fb, fb, g_fb_size);
     }
 
+    return 0;
+}
+
+int airplay_mirror_clear_direct(void)
+{
+    if (fb_init() < 0) return -1;
+
+    uint8_t *fb = (uint8_t *)g_fb_mmap;
+    for (int y = 0; y < g_fb_h; y++)
+        memset(fb + (size_t)y * g_fb_stride, 0xFF, (size_t)g_fb_stride);
+
+    if (g_update_marker != 0 && g_refresh_variant != REFRESH_VARIANT_MTK) {
+        uint32_t prev = g_update_marker;
+        int src = ioctl_timeout(g_fb_fd, MXCFB_WAIT_FOR_UPDATE_SUBMISSION, &prev, 2000);
+        if (src < 0)
+            dbg("clear_direct: WAIT_FOR_UPDATE_SUBMISSION failed errno=%d (%s)", errno, strerror(errno));
+
+        struct mxcfb_update_marker_data mrk = { .update_marker = prev, .collision_test = 0 };
+        int wrc = ioctl_timeout(g_fb_fd, MXCFB_WAIT_FOR_UPDATE_COMPLETE, &mrk, 2000);
+        if (wrc < 0)
+            dbg("clear_direct: WAIT_FOR_UPDATE_COMPLETE failed errno=%d (%s)", errno, strerror(errno));
+    }
+
+    uint32_t next_marker = g_update_marker + 1;
+    if (next_marker == 0) next_marker = 1;
+
+    int upd_rc = send_eink_update(next_marker, 0, 0,
+                                  (uint32_t)g_fb_w, (uint32_t)g_fb_h,
+                                  UPDATE_MODE_FULL);
+    if (upd_rc < 0) {
+        dbg("clear_direct: all refresh ioctls failed");
+        return -1;
+    }
+
+    g_update_marker = next_marker;
+    g_last_hash = 0;
+    g_last_fw = 0;
+    g_last_fh = 0;
+    g_have_rendered = 0;
+    g_last_forced_refresh = time(NULL);
+    if (g_last_fb && g_last_fb_w == g_fb_w && g_last_fb_h == g_fb_h)
+        memcpy(g_last_fb, fb, g_fb_size);
+
+    dbg("clear_direct: ioctl OK via %s, display cleared",
+        refresh_variant_name(g_refresh_variant));
     return 0;
 }
 

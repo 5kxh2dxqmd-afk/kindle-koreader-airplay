@@ -33,6 +33,7 @@ ffi.cdef[[
     int  airplay_mirror_get_frame(uint8_t *out_gray8, int *out_w, int *out_h);
     int  airplay_mirror_render_to_fb(uint8_t *fb, int fb_w, int fb_h, int fb_stride);
     int  airplay_mirror_render_direct(void);
+    int  airplay_mirror_clear_direct(void);
     int  airplay_mdns_start(const char *device_name, int port);
     void airplay_mdns_stop(void);
 ]]
@@ -142,6 +143,10 @@ end
 
 function M.render_direct()
     return lib.airplay_mirror_render_direct()
+end
+
+function M.clear_direct()
+    return lib.airplay_mirror_clear_direct()
 end
 
 return M
