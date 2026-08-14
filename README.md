@@ -87,6 +87,15 @@ make docker-kindle TARGET=hf   # firmware ≥5.16.3
 Both use Docker — no local toolchain needed (`Dockerfile.sf` / `Dockerfile.hf`). See the top of the [Makefile](Makefile) for native cross-compiler setup on Mac. CI builds and releases both variants automatically on every `v*` tag push.
 
 ---
+## Star History
+
+<a href="https://www.star-history.com/?repos=5kxh2dxqmd-afk%2Fkindle-koreader-airplay&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=5kxh2dxqmd-afk/kindle-koreader-airplay&type=date&theme=dark&legend=top-left&sealed_token=afsXRDfnPaLKoQyfdMyFm97xIfnPeQ5gmYUZaj7C2S_IoYwXf4hPNH7VH0EDhCdetQOmzJ1MHDM1PmtT-khGTwu98GVsDnbVMRZTnG6f0muMhPwu8doBYA" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=5kxh2dxqmd-afk/kindle-koreader-airplay&type=date&legend=top-left&sealed_token=afsXRDfnPaLKoQyfdMyFm97xIfnPeQ5gmYUZaj7C2S_IoYwXf4hPNH7VH0EDhCdetQOmzJ1MHDM1PmtT-khGTwu98GVsDnbVMRZTnG6f0muMhPwu8doBYA" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=5kxh2dxqmd-afk/kindle-koreader-airplay&type=date&legend=top-left&sealed_token=afsXRDfnPaLKoQyfdMyFm97xIfnPeQ5gmYUZaj7C2S_IoYwXf4hPNH7VH0EDhCdetQOmzJ1MHDM1PmtT-khGTwu98GVsDnbVMRZTnG6f0muMhPwu8doBYA" />
+ </picture>
+</a>
 
 ## Known limitations
 
