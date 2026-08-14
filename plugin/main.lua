@@ -2,7 +2,7 @@
     main.lua — KOReader plugin: AirPlay Screen Mirror Receiver
 
     Receives macOS AirPlay mirroring, renders decoded grayscale frames
-    to Kindle e-ink display at ~1-2 FPS (e-ink safe).
+    to Kindle e-ink display at ~1-2 FPS or a custom FPS(e-ink safe).
 
     Install: copy plugin/ to <koreader>/plugins/airplay.koplugin/
              copy libairplay_mirror.so to same directory
@@ -27,8 +27,8 @@ function AirPlayPlugin:init()
     end
 end
 
--- Refresh interval for e-ink (ms): 2000ms = 0.5 FPS
-local POLL_INTERVAL_MS = 2000
+-- Refresh interval for e-ink (ms): 1000ms = 1 FPS
+local POLL_INTERVAL_MS = 1000
 -- GC16 waveform handles ghosting; keep counter for potential future use
 local FULL_REFRESH_EVERY = 6
 
@@ -224,6 +224,50 @@ function AirPlayPlugin:addToMainMenu(menu_items)
                         callback = function()
                             POLL_INTERVAL_MS = 1000
                             FULL_REFRESH_EVERY = 6
+                        end,
+                    },
+                    {
+                        text = _("2 FPS (500ms) — smoothest"),
+                        callback = function()
+                            POLL_INTERVAL_MS = 500
+                            FULL_REFRESH_EVERY = 8
+                        end,
+                    },
+                    {
+                        text_func = function()
+                            return string.format(_("Custom (%d ms)…"), POLL_INTERVAL_MS)
+                        end,
+                        callback = function()
+                            local InputDialog = require("ui/widget/inputdialog")
+                            local dialog
+                            dialog = InputDialog:new{
+                                title = _("Custom refresh interval (ms)"),
+                                description = _("Enter interval in milliseconds (e.g. 750 ≈ 1.3 FPS)"),
+                                input = tostring(POLL_INTERVAL_MS),
+                                input_type = "number",
+                                buttons = {{
+                                    {
+                                        text = _("Cancel"),
+                                        callback = function()
+                                            UIManager:close(dialog)
+                                        end,
+                                    },
+                                    {
+                                        text = _("Set"),
+                                        is_enter_default = true,
+                                        callback = function()
+                                            local val = tonumber(dialog:getInputText())
+                                            if val and val >= 100 then
+                                                POLL_INTERVAL_MS = math.floor(val)
+                                            else
+                                                show_message(_("Invalid value — must be ≥ 100 ms"))
+                                            end
+                                            UIManager:close(dialog)
+                                        end,
+                                    },
+                                }},
+                            }
+                            UIManager:show(dialog)
                         end,
                     },
                 },
