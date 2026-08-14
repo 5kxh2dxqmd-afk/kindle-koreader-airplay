@@ -96,7 +96,7 @@ Both use Docker — no local toolchain needed (`Dockerfile.sf` / `Dockerfile.hf`
 - **macOS 12–14 tested** — AirPlay protocol may change in future macOS releases
 - **No AirPlay 2 multiroom** — screen mirroring only
 - **Two ABI builds required** — Amazon switched from soft- to hard-float ABI at firmware 5.16.3; sf and hf builds are not interchangeable (see [Install](#install))
-- **`mxcfb` EPDC v2 only** — tested on Paperwhite 5th Gen; behaviour on other devices is unknown
+- **`mxcfb` EPDC v2 only** — tested on Paperwhite 12th Gen; behaviour on other devices is unknown
 
 ---
 
