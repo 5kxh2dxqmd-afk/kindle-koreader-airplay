@@ -2,7 +2,7 @@
     main.lua — KOReader plugin: AirPlay Screen Mirror Receiver
 
     Receives macOS AirPlay mirroring, renders decoded grayscale frames
-    to Kindle e-ink display at ~1-2 FPS or a custom FPS(e-ink safe).
+    to Kindle e-ink display at ~1-2 FPS (e-ink safe).
 
     Install: copy plugin/ to <koreader>/plugins/airplay.koplugin/
              copy libairplay_mirror.so to same directory
@@ -32,6 +32,7 @@ local POLL_INTERVAL_MS = 1000
 -- GC16 waveform handles ghosting; keep counter for potential future use
 local FULL_REFRESH_EVERY = 6
 
+local custom_interval_ms = nil  -- set only when user picks Custom
 local airplay_ffi   -- loaded lazily
 local running       = false
 local stopping      = false
@@ -217,6 +218,7 @@ function AirPlayPlugin:addToMainMenu(menu_items)
                         callback = function()
                             POLL_INTERVAL_MS = 2000
                             FULL_REFRESH_EVERY = 4
+                            custom_interval_ms = nil
                         end,
                     },
                     {
@@ -224,6 +226,7 @@ function AirPlayPlugin:addToMainMenu(menu_items)
                         callback = function()
                             POLL_INTERVAL_MS = 1000
                             FULL_REFRESH_EVERY = 6
+                            custom_interval_ms = nil
                         end,
                     },
                     {
@@ -231,11 +234,16 @@ function AirPlayPlugin:addToMainMenu(menu_items)
                         callback = function()
                             POLL_INTERVAL_MS = 500
                             FULL_REFRESH_EVERY = 8
+                            custom_interval_ms = nil
                         end,
                     },
                     {
                         text_func = function()
-                            return string.format(_("Custom (%d ms)…"), POLL_INTERVAL_MS)
+                            if custom_interval_ms then
+                                return string.format(_("Custom (%d ms)…"), custom_interval_ms)
+                            else
+                                return _("Custom…")
+                            end
                         end,
                         callback = function()
                             local InputDialog = require("ui/widget/inputdialog")
@@ -243,7 +251,7 @@ function AirPlayPlugin:addToMainMenu(menu_items)
                             dialog = InputDialog:new{
                                 title = _("Custom refresh interval (ms)"),
                                 description = _("Enter interval in milliseconds (e.g. 750 ≈ 1.3 FPS)"),
-                                input = tostring(POLL_INTERVAL_MS),
+                                input = tostring(custom_interval_ms or POLL_INTERVAL_MS),
                                 input_type = "number",
                                 buttons = {{
                                     {
@@ -259,6 +267,9 @@ function AirPlayPlugin:addToMainMenu(menu_items)
                                             local val = tonumber(dialog:getInputText())
                                             if val and val >= 100 then
                                                 POLL_INTERVAL_MS = math.floor(val)
+                                                custom_interval_ms = POLL_INTERVAL_MS
+                                                -- scale full-refresh cadence with interval
+                                                FULL_REFRESH_EVERY = math.max(1, math.floor(6000 / POLL_INTERVAL_MS))
                                             else
                                                 show_message(_("Invalid value — must be ≥ 100 ms"))
                                             end
