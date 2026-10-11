@@ -1,7 +1,8 @@
 # Makefile — Build complete KOReader AirPlay plugin
 #
 # OUTPUT:  dist-$(TARGET)/airplay.koplugin/
-#          Copy this directory to: <kindle>/koreader/plugins/
+#          build-kindle-$(TARGET)/airplay_ill (Illusion app receiver)
+#          Copy the plugin directory to: <kindle>/koreader/plugins/
 #
 # TARGETS:
 #   make kindle TARGET=sf|hf         Cross-compile for Kindle ARM  ← use this
@@ -70,6 +71,7 @@ SRC_COMMON := src/airplay_wrapper.c src/dnssd_stub.c $(UXPLAY_SRC)
 HDR        := src/airplay_mirror.h
 PLUGIN_SRC := plugin/_meta.lua plugin/main.lua plugin/airplay_ffi.lua
 LIB        := libairplay_mirror.so
+ILLUSION_BIN := airplay_ill
 
 # ── Target selection (sf | hf) ────────────────────────────────────
 TARGET ?= sf
@@ -156,14 +158,16 @@ CFLAGS      := -O2 -Wall -Wextra -fPIC -Isrc $(UXPLAY_INC) $(FF_CFLAGS) \
 LDFLAGS     := -shared -lpthread -Wl,--wrap,llhttp_init $(FF_LDFLAGS) $(OPENSSL_LDFLAGS) $(PLIST_LDFLAGS)
 # ARM: static libs linked directly — no runtime dependency.
 # FF_LDFLAGS, OPENSSL_LDFLAGS, PLIST_LDFLAGS set by Dockerfile CMD.
-LDFLAGS_ARM := -shared -lpthread -ldl -Wl,--wrap,llhttp_init $(FF_LDFLAGS) $(OPENSSL_LDFLAGS) $(PLIST_LDFLAGS)
+LDLIBS_ARM := -Wl,--wrap,llhttp_init $(FF_LDFLAGS) $(OPENSSL_LDFLAGS) $(PLIST_LDFLAGS) -lpthread -ldl
+LDFLAGS_ARM := -shared $(LDLIBS_ARM)
 
 # ─────────────────────────────────────────────────────────────────
 .PHONY: kindle native docker-kindle clean help
 
 # ── kindle: cross-compile on Mac via toolchain ────────────────────
-kindle: _check_cross $(BUILD_DIR)/$(LIB)
+kindle: _check_cross $(BUILD_DIR)/$(LIB) $(BUILD_DIR)/$(ILLUSION_BIN)
 	@$(MAKE) --no-print-directory _assemble SO=$(BUILD_DIR)/$(LIB)
+	@$(MAKE) --no-print-directory _assemble_illusion
 
 _check_cross:
 	@command -v $(CC_KINDLE) >/dev/null 2>&1 || { \
@@ -191,6 +195,11 @@ $(BUILD_DIR)/$(LIB): $(SRC) $(HDR)
 	$(CC_KINDLE) $(CFLAGS) $(ARM_CFLAGS) -o $@ $(SRC) $(LDFLAGS_ARM)
 	$(STRIP_K) --strip-unneeded $@
 
+$(BUILD_DIR)/$(ILLUSION_BIN): $(SRC) src/airplay_illusion_server.c $(HDR)
+	@mkdir -p $(BUILD_DIR)
+	$(CC_KINDLE) $(CFLAGS) $(ARM_CFLAGS) -o $@ $(SRC) src/airplay_illusion_server.c $(LDLIBS_ARM)
+	$(STRIP_K) --strip-unneeded $@
+
 # ── docker-kindle: build via Dockerfile.$(TARGET) ─────────────────
 DOCKER_IMAGE := airplay-kindle-builder-$(TARGET)
 
@@ -203,6 +212,7 @@ docker-kindle:
 	  -e TARGET=$(TARGET) \
 	  $(DOCKER_IMAGE)
 	@$(MAKE) --no-print-directory _assemble SO=$(BUILD_DIR)/$(LIB)
+	@$(MAKE) --no-print-directory _assemble_illusion
 
 # ── native: build for Mac (test only, not for Kindle) ─────────────
 # Always sf-shaped (no compat_glibc.c — that's a GNU/Linux-only symver
@@ -227,6 +237,16 @@ _assemble:
 	@echo ""
 	@echo "Deploy to Kindle (USB):"
 	@echo "  cp -r $(DIST) /Volumes/Kindle/extensions/koreader/plugins/"
+
+.PHONY: _assemble_illusion
+_assemble_illusion:
+	@mkdir -p dist-$(TARGET)/illusion-airplay
+	cp illusion/airplay/index.html illusion/airplay/style.css \
+	   illusion/airplay/app.js illusion/airplay/config.xml \
+	   dist-$(TARGET)/illusion-airplay/
+	cp $(BUILD_DIR)/$(ILLUSION_BIN) dist-$(TARGET)/illusion-airplay/
+	cp illusion/airplay/illusion-airplay.sh dist-$(TARGET)/illusion-airplay.sh
+	@echo "Illusion app ready: dist-$(TARGET)/illusion-airplay/"
 
 clean:
 	rm -rf build-kindle-sf build-kindle-hf build-native dist dist-sf dist-hf

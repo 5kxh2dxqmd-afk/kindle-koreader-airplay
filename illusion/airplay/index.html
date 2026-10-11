@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <title>Kindle AirPlay</title>
+    <link rel="stylesheet" type="text/css" href="/style.css">
+    <script type="text/javascript" src="/app.js"></script>
+</head>
+<body>
+    <div id="splash" class="screen">
+        <div class="brand">
+            <div class="brand-cell">
+                <div class="airplay-mark" aria-hidden="true">
+                    <svg viewBox="0 0 96 72" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="5" y="4" width="86" height="52" rx="6" fill="none" stroke="currentColor" stroke-width="6"/>
+                        <path d="M48 20 27 49h42z" fill="currentColor"/>
+                        <path d="M24 67h48" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+                    </svg>
+                </div>
+                <div class="eyebrow">KINDLE RECEIVER</div>
+                <h1>AirPlay</h1>
+                <p class="subtitle">A quiet second screen.</p>
+            </div>
+        </div>
+
+        <div class="connect-row">
+            <div class="connect-cell">
+                <div class="connect-card">
+                    <div class="status-line"><span id="status-dot" class="dot"></span><span id="status-text">Ready to connect</span></div>
+                    <div class="rule"></div>
+                    <p class="instruction">On your Mac, iPhone, or iPad, open <strong>Screen Mirroring</strong> or <strong>AirPlay</strong> and choose:</p>
+                    <div class="device-name">Kindle AirPlay</div>
+                    <p class="hint">Keep this screen open while you connect.</p>
+                </div>
+            </div>
+        </div>
+        <div class="footer-row"><div class="footer">SAME WI-FI NETWORK REQUIRED</div></div>
+    </div>
+
+    <div id="viewer" class="screen hidden">
+        <div class="viewer-bar">
+            <div class="viewer-brand"><span class="mini-mark">⌁</span> KINDLE AIRPLAY</div>
+            <div class="live-state"><span class="dot"></span> CONNECTED</div>
+        </div>
+        <div class="frame-wrap"><img id="airplay-frame" alt="AirPlay screen" /></div>
+        <div id="frame-note" class="frame-note">Waiting for picture…</div>
+    </div>
+
+    <div id="error" class="screen hidden">
+        <div class="error-card">
+            <div class="eyebrow">RECEIVER UNAVAILABLE</div>
+            <h1>One moment</h1>
+            <p>The AirPlay receiver is starting. This page will reconnect automatically.</p>
+        </div>
+    </div>
+</body>
+</html>

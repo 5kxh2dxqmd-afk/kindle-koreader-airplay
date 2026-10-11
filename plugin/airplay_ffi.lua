@@ -26,6 +26,7 @@ ffi.cdef[[
         int              video_port;
         airplay_frame_cb on_frame;
         void            *userdata;
+        const char      *key_path;
     } airplay_config_t;
 
     int  airplay_mirror_start(const airplay_config_t *cfg);
@@ -109,6 +110,7 @@ function M.start(opts)
     cfg.video_port  = opts.video_port  or 7100
     cfg.on_frame    = nil
     cfg.userdata    = nil
+    cfg.key_path    = opts.key_path
     local ok = lib.airplay_mirror_start(cfg) == 0
     log("M.start: result=" .. tostring(ok))
     return ok

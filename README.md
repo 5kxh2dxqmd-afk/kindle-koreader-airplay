@@ -52,6 +52,12 @@ airplay.koplugin/  →  /Volumes/Kindle/extensions/koreader/plugins/
 
 Restart KOReader.
 
+### Illusion app
+
+The release also includes a standalone [Illusion](https://github.com/penguins184/Penguins-Kindle-Wiki/blob/main/Illusion-Guide.md) app. It opens a simple AirPlay splash screen in Mesquite and displays incoming mirrored frames in the HTML page. The page renderer owns the display while the app is open, avoiding competing direct framebuffer writes.
+
+Download the matching `airplay-illusion-sf-*.zip` or `airplay-illusion-hf-*.zip` from [Releases](../../releases). Extract both `illusion-airplay.sh` and the `illusion-airplay/` folder into `/mnt/us/documents/` on the Kindle, then tap **Kindle AirPlay** in the library. Keep the device awake while receiving. The app requires a jailbroken Kindle with Illusion/Mesquite support.
+
 ---
 
 ## Usage
@@ -84,7 +90,7 @@ make docker-kindle TARGET=sf   # firmware ≤5.16.2.1.1
 make docker-kindle TARGET=hf   # firmware ≥5.16.3
 ```
 
-Both use Docker — no local toolchain needed (`Dockerfile.sf` / `Dockerfile.hf`). See the top of the [Makefile](Makefile) for native cross-compiler setup on Mac. CI builds and releases both variants automatically on every `v*` tag push.
+Both use Docker — no local toolchain needed (`Dockerfile.sf` / `Dockerfile.hf`). These targets build the KOReader plugin and the Illusion receiver binary. See the top of the [Makefile](Makefile) for native cross-compiler setup on Mac. CI builds and releases both variants automatically on every `v*` tag push.
 
 ---
 ## Star History

@@ -343,6 +343,7 @@ static struct {
     pthread_mutex_t  frame_mutex;
     uint8_t         *frame_buf;
     int              frame_w, frame_h, frame_ready;
+    volatile int     client_connected;
 } g;
 
 /* Reuse the previous published frame as the next conversion target. The
@@ -497,8 +498,8 @@ static void cb_raop_log(void *cls, int level, const char *msg)
 /* no-op stubs for required callbacks */
 static void cb_audio_process(void *cls, raop_ntp_t *ntp, audio_decode_struct *d)
 { (void)cls;(void)ntp;(void)d; }
-static void cb_conn_init(void *cls)   { (void)cls; dbg("raop: conn_init"); }
-static void cb_conn_destroy(void *cls){ (void)cls; dbg("raop: conn_destroy"); }
+static void cb_conn_init(void *cls)   { (void)cls; g.client_connected = 1; dbg("raop: conn_init"); }
+static void cb_conn_destroy(void *cls){ (void)cls; g.client_connected = 0; dbg("raop: conn_destroy"); }
 static void cb_conn_reset(void *cls, int r){ (void)cls; dbg("raop: conn_reset %d",r); }
 static void cb_conn_teardown(void *cls, bool *td96, bool *td110)
 { (void)cls; if(td96)*td96=true; if(td110)*td110=true; }
@@ -564,7 +565,7 @@ int airplay_mirror_start(const airplay_config_t *cfg)
     char device_id[18] = "AA:BB:CC:DD:EE:FF";
     dbg("step: raop_init2");
     if (raop_init2(g.raop, 0, device_id,
-                   "/mnt/us/koreader/plugins/airplay.koplugin/airplay_key.pem") < 0) {
+                   cfg->key_path ? cfg->key_path : "/mnt/us/koreader/plugins/airplay.koplugin/airplay_key.pem") < 0) {
         dbg("raop_init2 failed"); airplay_mirror_stop(); return -1;
     }
     dbg("step: raop_init2 OK");
@@ -1215,6 +1216,11 @@ void airplay_mirror_stop(void)
     fb_cleanup();
 
     if (g_log) { fclose(g_log); g_log = NULL; }
+}
+
+int airplay_mirror_is_connected(void)
+{
+    return g.client_connected != 0;
 }
 
 int airplay_mirror_get_frame(uint8_t *out_gray8, int *out_w, int *out_h)

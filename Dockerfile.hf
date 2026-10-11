@@ -138,7 +138,7 @@ WORKDIR /work
 # optimization for shell-metacharacter-free recipe lines doesn't reliably
 # do a PATH search the way a real shell would.
 CMD ["bash", "-c", \
-     "make TARGET=hf build-kindle-hf/libairplay_mirror.so \
+     "make TARGET=hf build-kindle-hf/libairplay_mirror.so build-kindle-hf/airplay_ill \
         CC_KINDLE=/opt/kindlehf-gcc \
         STRIP_K=/opt/kindlehf-strip \
         FF_CFLAGS='-I/opt/ffmpeg-arm/include' \

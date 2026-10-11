@@ -52,7 +52,7 @@ jobs:
           rm -rf /tmp/.buildx-cache-${{ matrix.target }}
           mv /tmp/.buildx-cache-${{ matrix.target }}-new /tmp/.buildx-cache-${{ matrix.target }}
 
-      - name: Build libairplay_mirror.so (ARM, ${{ matrix.target }})
+      - name: Build receiver binaries (ARM, ${{ matrix.target }})
         run: |
           docker run --rm \
             -v "${{ github.workspace }}":/work \
@@ -70,13 +70,27 @@ jobs:
           sha256sum "airplay.koplugin-${{ matrix.target }}-${{ github.ref_name }}.zip" \
             > "airplay.koplugin-${{ matrix.target }}-${{ github.ref_name }}.zip.sha256"
 
+      - name: Package Illusion app
+        run: |
+          mkdir -p illusion-package/illusion-airplay
+          cp illusion/airplay/index.html illusion/airplay/style.css illusion/airplay/app.js illusion/airplay/config.xml illusion-package/illusion-airplay/
+          cp "build-kindle-${{ matrix.target }}/airplay_ill" illusion-package/illusion-airplay/
+          cp illusion/airplay/illusion-airplay.sh illusion-package/
+          cd illusion-package
+          zip -r "../airplay-illusion-${{ matrix.target }}-${{ github.ref_name }}.zip" illusion-airplay.sh illusion-airplay/
+          cd ..
+          sha256sum "airplay-illusion-${{ matrix.target }}-${{ github.ref_name }}.zip" \
+            > "airplay-illusion-${{ matrix.target }}-${{ github.ref_name }}.zip.sha256"
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: airplay-koplugin-${{ matrix.target }}
+          name: airplay-release-packages-${{ matrix.target }}
           path: |
             airplay.koplugin-${{ matrix.target }}-${{ github.ref_name }}.zip
             airplay.koplugin-${{ matrix.target }}-${{ github.ref_name }}.zip.sha256
+            airplay-illusion-${{ matrix.target }}-${{ github.ref_name }}.zip
+            airplay-illusion-${{ matrix.target }}-${{ github.ref_name }}.zip.sha256
           retention-days: 1
 
   release:
@@ -102,6 +116,10 @@ jobs:
             artifacts/airplay.koplugin-sf-${{ github.ref_name }}.zip.sha256
             artifacts/airplay.koplugin-hf-${{ github.ref_name }}.zip
             artifacts/airplay.koplugin-hf-${{ github.ref_name }}.zip.sha256
+            artifacts/airplay-illusion-sf-${{ github.ref_name }}.zip
+            artifacts/airplay-illusion-sf-${{ github.ref_name }}.zip.sha256
+            artifacts/airplay-illusion-hf-${{ github.ref_name }}.zip
+            artifacts/airplay-illusion-hf-${{ github.ref_name }}.zip.sha256
           body: |
             ## Install
 
@@ -115,5 +133,9 @@ jobs:
             3. Restart KOReader
 
             **Not sure which one you need?** Check Settings → Device Info on the Kindle, or `cat /etc/prettyversion.txt` over SSH — anything 5.16.3 or newer is the hard-float (hf) build.
+
+            ## Illusion app (separate package)
+
+            Download `airplay-illusion-sf-${{ github.ref_name }}.zip` for firmware <=5.16.2.1.1 or `airplay-illusion-hf-${{ github.ref_name }}.zip` for firmware >=5.16.3. Extract `illusion-airplay.sh` and the `illusion-airplay/` folder into `/mnt/us/documents/`, then tap **Kindle AirPlay** in the Kindle library. It opens a clean AirPlay screen and switches to the mirrored picture after connection. Keep the Kindle awake while receiving.
 
             See [README](https://github.com/${{ github.repository }}/blob/main/README.md) for full setup instructions.

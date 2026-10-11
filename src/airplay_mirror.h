@@ -16,11 +16,13 @@ typedef struct airplay_config {
     int         video_port;    /* H.264 stream port, default 7100 */
     airplay_frame_cb on_frame;
     void        *userdata;
+    const char *key_path;      /* optional persistent pairing key path */
 } airplay_config_t;
 
 /* Returns 0 on success */
 int  airplay_mirror_start(const airplay_config_t *cfg);
 void airplay_mirror_stop(void);
+int  airplay_mirror_is_connected(void);
 
 /* Get latest decoded frame (non-blocking, returns 0 if new frame available) */
 int  airplay_mirror_get_frame(uint8_t *out_gray8, int *out_w, int *out_h);
