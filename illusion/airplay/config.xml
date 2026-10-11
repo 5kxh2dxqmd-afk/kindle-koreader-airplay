@@ -8,6 +8,25 @@
     <kindle:permissions>
         <kindle:permission name="local-port-access" />
     </kindle:permissions>
+    <kindle:network>
+        <kindle:asset key="user-agent" value="kindle://device-type" />
+        <kindle:asset key="user-agent" value="kindle://sw-version" />
+        <kindle:asset key="user-agent" value="kindle://pretty-sw-version" />
+        <kindle:asset key="http-header" value="kindle://transport-method" />
+        <kindle:asset key="http-header" value="kindle://country-code" />
+        <kindle:asset key="initialDNS" value="false" />
+        <kindle:asset key="maxConnections" value="6" />
+        <kindle:asset key="maxConnectionsPerHost" value="2" />
+        <kindle:asset key="maxConnectionsPerProxy" value="6" />
+        <kindle:asset key="overrideProxy" value="none" />
+        <kindle:asset key="enableCaching" value="false" />
+    </kindle:network>
+    <kindle:cookiejar>
+        <kindle:asset key="persistent" value="true" />
+        <kindle:asset key="usePrivateCookies" value="false" />
+        <kindle:asset key="useDeviceCookies" value="true" />
+        <kindle:asset key="useAccessToken" value="true" />
+    </kindle:cookiejar>
     <kindle:chrome>
         <kindle:asset key="configureSearchBar" value="system" />
     </kindle:chrome>
