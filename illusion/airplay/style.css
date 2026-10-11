@@ -29,8 +29,25 @@ h1 { margin: 8px 0 4px; font-size: 42px; line-height: 1.05; font-weight: normal;
 .mini-mark { margin-right: 7px; font-size: 21px; vertical-align: -2px; }
 .live-state { float: right; padding-top: 4px; color: #ddd; font-size: 10px; }
 .live-state .dot { width: 7px; height: 7px; background: #fff; }
-.frame-wrap { display: table; width: 100%; height: 100%; padding: 42px 0 20px; }
-.frame-wrap img { display: table-cell; max-width: 100%; max-height: 100%; margin: auto; border: 0; }
+.frame-wrap {
+    position: absolute;
+    top: 42px;
+    right: 0;
+    bottom: 20px;
+    left: 0;
+    text-align: center;
+    overflow: hidden;
+}
+.frame-wrap img {
+    display: inline-block;
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
+    margin: 0 auto;
+    border: 0;
+    vertical-align: middle;
+}
 .frame-note { position: absolute; bottom: 7px; left: 0; width: 100%; color: #ddd; font-size: 11px; }
 #error { display: table; }
 .error-card { display: table-cell; padding: 30px; vertical-align: middle; }

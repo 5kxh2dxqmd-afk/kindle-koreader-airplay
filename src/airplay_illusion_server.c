@@ -15,6 +15,9 @@
 
 #define WEB_PORT 7080
 #define MAX_FRAME_BYTES (16u * 1024u * 1024u)
+/* Kindle WebKit struggles with huge / 8-bit BMPs; keep a modest 24-bit image. */
+#define MAX_BMP_EDGE 1024
+#define WAF_DIR "/var/local/mesquite/com.kindleairplay.app"
 
 static volatile sig_atomic_t stopping;
 static int connected_client;
@@ -78,49 +81,85 @@ static void put_u32(uint8_t *p, uint32_t v)
     p[3] = (uint8_t)(v >> 24);
 }
 
+static void write_bmp_copy(const char *dir)
+{
+    if (!dir || !dir[0] || !have_frame || !bmp_frame || !bmp_length) return;
+    char path[768];
+    snprintf(path, sizeof(path), "%s/current.bmp", dir);
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    (void)fwrite(bmp_frame, 1, bmp_length, f);
+    fclose(f);
+}
+
+/* Build a 24-bit BMP (BGR). Kindle's WebKit is unreliable with 8-bit paletted BMPs. */
 static int refresh_frame(void)
 {
-    int w = 0, h = 0;
-    if (airplay_mirror_get_frame(gray_frame, &w, &h) != 0 || w <= 0 || h <= 0 ||
-        (size_t)w > MAX_FRAME_BYTES / (size_t)h) {
-        return 0;
+    int src_w = 0, src_h = 0;
+    if (airplay_mirror_get_frame(gray_frame, &src_w, &src_h) != 0 ||
+        src_w <= 0 || src_h <= 0 ||
+        (size_t)src_w > MAX_FRAME_BYTES / (size_t)src_h) {
+        return have_frame;
     }
 
-    size_t row = ((size_t)w + 3u) & ~(size_t)3u;
-    size_t size = 14u + 40u + 1024u + row * (size_t)h;
+    int w = src_w, h = src_h;
+    if (w > MAX_BMP_EDGE || h > MAX_BMP_EDGE) {
+        if (w >= h) {
+            h = (int)((long)h * MAX_BMP_EDGE / w);
+            w = MAX_BMP_EDGE;
+        } else {
+            w = (int)((long)w * MAX_BMP_EDGE / h);
+            h = MAX_BMP_EDGE;
+        }
+        if (w < 1) w = 1;
+        if (h < 1) h = 1;
+    }
+
+    size_t row = ((size_t)w * 3u + 3u) & ~(size_t)3u;
+    size_t size = 14u + 40u + row * (size_t)h;
     if (size > bmp_capacity) {
         uint8_t *p = realloc(bmp_frame, size);
-        if (!p) return 0;
+        if (!p) return have_frame;
         bmp_frame = p;
         bmp_capacity = size;
     }
-    memset(bmp_frame, 0, 14u + 40u + 1024u);
+    memset(bmp_frame, 0, 14u + 40u);
     bmp_frame[0] = 'B'; bmp_frame[1] = 'M';
     put_u32(bmp_frame + 2, (uint32_t)size);
-    put_u32(bmp_frame + 10, 14u + 40u + 1024u);
+    put_u32(bmp_frame + 10, 14u + 40u);
     put_u32(bmp_frame + 14, 40u);
     put_u32(bmp_frame + 18, (uint32_t)w);
     put_u32(bmp_frame + 22, (uint32_t)h);
     put_u16(bmp_frame + 26, 1);
-    put_u16(bmp_frame + 28, 8);
+    put_u16(bmp_frame + 28, 24);
     put_u32(bmp_frame + 34, (uint32_t)(row * (size_t)h));
-    put_u32(bmp_frame + 46, 256);
-    for (unsigned int i = 0; i < 256; i++) {
-        uint8_t *entry = bmp_frame + 54u + i * 4u;
-        entry[0] = entry[1] = entry[2] = (uint8_t)i;
-        entry[3] = 0;
-    }
-    uint8_t *pixels = bmp_frame + 1078u;
+
+    uint8_t *pixels = bmp_frame + 54u;
     for (int y = 0; y < h; y++) {
+        int src_y = (int)((long)y * src_h / h);
+        if (src_y >= src_h) src_y = src_h - 1;
+        const uint8_t *src_row = gray_frame + (size_t)src_y * (size_t)src_w;
         uint8_t *dst = pixels + (size_t)(h - y - 1) * row;
-        memcpy(dst, gray_frame + (size_t)y * (size_t)w, (size_t)w);
-        if (row > (size_t)w) memset(dst + w, 0, row - (size_t)w);
+        for (int x = 0; x < w; x++) {
+            int src_x = (int)((long)x * src_w / w);
+            if (src_x >= src_w) src_x = src_w - 1;
+            uint8_t g = src_row[src_x];
+            dst[x * 3]     = g;
+            dst[x * 3 + 1] = g;
+            dst[x * 3 + 2] = g;
+        }
+        if (row > (size_t)w * 3u)
+            memset(dst + (size_t)w * 3u, 0, row - (size_t)w * 3u);
     }
+
     bmp_length = size;
     frame_width = w;
     frame_height = h;
     frame_sequence++;
     have_frame = 1;
+    /* file:// WAF can show this without crossing onto http://127.0.0.1 */
+    write_bmp_copy(app_dir);
+    write_bmp_copy(WAF_DIR);
     return 1;
 }
 

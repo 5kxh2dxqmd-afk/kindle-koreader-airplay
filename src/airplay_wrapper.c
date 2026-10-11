@@ -386,7 +386,11 @@ static time_t g_last_forced_refresh = 0;
 
 static FILE *g_log;
 static void dbg(const char *fmt, ...) {
-    if (!g_log) g_log = fopen("/mnt/us/koreader/plugins/airplay.koplugin/airplay.log", "a");
+    if (!g_log) {
+        g_log = fopen("/mnt/us/koreader/plugins/airplay.koplugin/airplay.log", "a");
+        if (!g_log)
+            g_log = fopen("/mnt/us/documents/illusion-airplay/airplay.log", "a");
+    }
     if (!g_log) return;
     va_list ap; va_start(ap,fmt); vfprintf(g_log,fmt,ap); va_end(ap);
     fputc('\n',g_log); fflush(g_log);

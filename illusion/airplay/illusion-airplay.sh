@@ -27,7 +27,7 @@ if [ -d "$TARGET_DIR" ]; then
 fi
 cp -r "$SOURCE_DIR" "$TARGET_DIR"
 
-# Receiver serves /api/* for the WAF. UI itself loads from local files.
+# Receiver serves /api/* and writes current.bmp into the WAF dir for the <img>.
 if ! pidof airplay_ill >/dev/null 2>&1; then
     if [ -x "$DAEMON" ]; then
         nohup "$DAEMON" "$SOURCE_DIR" >"$LOG" 2>&1 </dev/null &
@@ -35,6 +35,10 @@ if ! pidof airplay_ill >/dev/null 2>&1; then
     else
         echo "airplay_ill is missing or not executable" >"$LOG"
     fi
+fi
+
+if ! pidof airplay_ill >/dev/null 2>&1; then
+    echo "airplay_ill failed to stay running; see $LOG" >>"$LOG"
 fi
 
 sqlite3 "$DB" <<EOF

@@ -1,4 +1,6 @@
 (function () {
+    /* Status stays on the local receiver; the picture is a file next to this
+     * WAF (current.bmp) so Mesquite does not have to load a huge http image. */
     var API = "http://127.0.0.1:7080";
     var splash, viewer, errorPage, statusText, statusDot, frame, frameNote;
     var connected = false;
@@ -59,7 +61,8 @@
                     frameNote.innerHTML = "";
                     if (data.frameId !== lastFrameId) {
                         lastFrameId = data.frameId;
-                        frame.src = API + "/api/frame.bmp?t=" + new Date().getTime();
+                        /* Prefer the WAF-local file the daemon writes each frame. */
+                        frame.src = "current.bmp?t=" + data.frameId;
                     }
                 } else {
                     frameNote.innerHTML = "Waiting for the first picture…";
@@ -82,7 +85,14 @@
         statusDot = byId("status-dot");
         frame = byId("airplay-frame");
         frameNote = byId("frame-note");
-        frame.onerror = function () { frameNote.innerHTML = "Waiting for picture…"; };
+        frame.onerror = function () {
+            /* Fall back to the HTTP endpoint if the local file is missing. */
+            if (lastFrameId >= 0 && frame.src.indexOf("current.bmp") >= 0) {
+                frame.src = API + "/api/frame.bmp?t=" + lastFrameId;
+                return;
+            }
+            frameNote.innerHTML = "Waiting for picture…";
+        };
         update();
     });
 }());
