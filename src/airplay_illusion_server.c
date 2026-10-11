@@ -29,6 +29,22 @@ static size_t bmp_length;
 static int frame_width;
 static int frame_height;
 static unsigned long frame_sequence;
+
+/* E-ink friendly output: quantise to the panel's 16 gray levels with a fixed
+ * 4x4 ordered dither, and keep the previous output pixel when the new value is
+ * within one level (hysteresis). Video noise then stops changing pixels from
+ * frame to frame, and an identical picture does not bump frame_sequence, so the
+ * page does not reload (= re-flash) a static screen on every poll. */
+#define EINK_HYSTERESIS 17
+static uint8_t *prev_gray;
+static size_t prev_capacity;
+static int prev_w, prev_h;
+static const uint8_t bayer4[4][4] = {
+    { 0,  8,  2, 10},
+    {12,  4, 14,  6},
+    { 3, 11,  1,  9},
+    {15,  7, 13,  5}
+};
 static char app_dir[512] = "/mnt/us/documents/illusion-airplay";
 
 static void firewall_rule(const char *verb, const char *chain,
@@ -92,7 +108,7 @@ static void write_bmp_copy(const char *dir)
     fclose(f);
 }
 
-/* Build a 24-bit BMP (BGR). Kindle's WebKit is unreliable with 8-bit paletted BMPs. */
+/* Build a 24-bit BMP (BGR, 16-level dithered gray). Kindle's WebKit is unreliable with 8-bit paletted BMPs. */
 static int refresh_frame(void)
 {
     int src_w = 0, src_h = 0;
@@ -123,6 +139,17 @@ static int refresh_frame(void)
         bmp_frame = p;
         bmp_capacity = size;
     }
+    int same_dims = (prev_gray && prev_w == w && prev_h == h);
+    {
+        size_t need = (size_t)w * (size_t)h;
+        if (need > prev_capacity) {
+            uint8_t *np = realloc(prev_gray, need);
+            if (!np) return have_frame;
+            prev_gray = np;
+            prev_capacity = need;
+            same_dims = 0;
+        }
+    }
     memset(bmp_frame, 0, 14u + 40u);
     bmp_frame[0] = 'B'; bmp_frame[1] = 'M';
     put_u32(bmp_frame + 2, (uint32_t)size);
@@ -135,15 +162,24 @@ static int refresh_frame(void)
     put_u32(bmp_frame + 34, (uint32_t)(row * (size_t)h));
 
     uint8_t *pixels = bmp_frame + 54u;
+    size_t changed = 0;
     for (int y = 0; y < h; y++) {
         int src_y = (int)((long)y * src_h / h);
         if (src_y >= src_h) src_y = src_h - 1;
         const uint8_t *src_row = gray_frame + (size_t)src_y * (size_t)src_w;
         uint8_t *dst = pixels + (size_t)(h - y - 1) * row;
+        uint8_t *prev_row = prev_gray + (size_t)y * (size_t)w;
         for (int x = 0; x < w; x++) {
             int src_x = (int)((long)x * src_w / w);
             if (src_x >= src_w) src_x = src_w - 1;
-            uint8_t g = src_row[src_x];
+            int v16 = (int)src_row[src_x] * 240 / 255;   /* 0..240, 1/16 level units */
+            uint8_t g = (uint8_t)(((v16 + bayer4[y & 3][x & 3]) >> 4) * 17);
+            if (same_dims) {
+                int d = (int)g - (int)prev_row[x];
+                if (d >= -EINK_HYSTERESIS && d <= EINK_HYSTERESIS) g = prev_row[x];
+            }
+            if (!same_dims || g != prev_row[x]) changed++;
+            prev_row[x] = g;
             dst[x * 3]     = g;
             dst[x * 3 + 1] = g;
             dst[x * 3 + 2] = g;
@@ -155,6 +191,10 @@ static int refresh_frame(void)
     bmp_length = size;
     frame_width = w;
     frame_height = h;
+    prev_w = w;
+    prev_h = h;
+    /* Identical picture: keep the same frame id and skip the file writes. */
+    if (same_dims && changed == 0 && have_frame) return 1;
     frame_sequence++;
     have_frame = 1;
     /* file:// WAF can show this without crossing onto http://127.0.0.1 */
@@ -239,6 +279,8 @@ static void serve_request(int fd)
             have_frame = 0;
             frame_width = 0;
             frame_height = 0;
+            prev_w = 0;
+            prev_h = 0;
         }
         char json[192];
         int len = snprintf(json, sizeof(json),
@@ -298,8 +340,14 @@ int main(int argc, char **argv)
     gray_frame = malloc(MAX_FRAME_BYTES);
     if (!gray_frame) return 1;
 
-    signal(SIGINT, on_signal);
-    signal(SIGTERM, on_signal);
+    /* No SA_RESTART: let accept() return EINTR so SIGTERM actually stops us. */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_signal;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    signal(SIGPIPE, SIG_IGN);
     airplay_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.device_name = "Kindle AirPlay";

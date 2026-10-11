@@ -27,6 +27,16 @@ if [ -d "$TARGET_DIR" ]; then
 fi
 cp -r "$SOURCE_DIR" "$TARGET_DIR"
 
+# Always restart so the freshly installed binary is the one running.
+# (SIGTERM first, wait up to 8s, then SIGKILL.)
+if pidof airplay_ill >/dev/null 2>&1; then
+    kill $(pidof airplay_ill) 2>/dev/null
+    i=0
+    while pidof airplay_ill >/dev/null 2>&1 && [ "$i" -lt 8 ]; do sleep 1; i=$((i+1)); done
+    kill -9 $(pidof airplay_ill) 2>/dev/null
+    sleep 1
+fi
+
 # Receiver serves /api/* and writes current.bmp into the WAF dir for the <img>.
 if ! pidof airplay_ill >/dev/null 2>&1; then
     if [ -x "$DAEMON" ]; then

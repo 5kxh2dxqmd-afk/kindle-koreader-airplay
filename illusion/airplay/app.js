@@ -6,6 +6,8 @@
     var DEBUG = false;   /* true = show status strip at bottom of the screen */
     var splash, viewer, errorPage, statusText, statusDot, frame, frameNote, dbgEl;
     var connected = false, failures = 0, lastFrameId = -1, started = false;
+    var FLASH_EVERY = 40;   /* auto full-screen flash after this many new frames; 0 = off. Tap the screen to flash manually. */
+    var flashEl, framesSinceFlash = 0;
     var polls = 0, lastInfo = "booting", jsErrors = "", imgInfo = "img:-";
 
     function byId(id) { return document.getElementById(id); }
@@ -51,6 +53,21 @@
         try { xhr.send(null); } catch (e2) { finish(new Error("send threw " + e2)); }
     }
 
+    /* Black -> white flash across the whole screen: forces the e-ink panel to clear ghosting. */
+    function flash() {
+        if (!flashEl) {
+            flashEl = document.createElement("div");
+            flashEl.style.cssText = "position:fixed;left:0;top:0;width:100%;height:100%;z-index:50;display:none;";
+            document.body.appendChild(flashEl);
+        }
+        flashEl.style.background = "#000";
+        flashEl.style.display = "block";
+        window.setTimeout(function () {
+            flashEl.style.background = "#fff";
+            window.setTimeout(function () { flashEl.style.display = "none"; }, 250);
+        }, 250);
+    }
+
     function showSplash(message) {
         splash.className = "screen";
         viewer.className = "screen hidden";
@@ -94,6 +111,7 @@
                     if (data.frameId !== lastFrameId) {
                         lastFrameId = data.frameId;
                         frame.src = "current.bmp?t=" + data.frameId;
+                        if (FLASH_EVERY && ++framesSinceFlash >= FLASH_EVERY) { framesSinceFlash = 0; flash(); }
                     }
                 } else {
                     frameNote.innerHTML = "Waiting for the first picture…";
@@ -115,6 +133,7 @@
         frame = byId("airplay-frame"); frameNote = byId("frame-note");
         if (!splash || !frame) { return; }
         started = true;
+        viewer.onclick = function () { framesSinceFlash = 0; flash(); };
         frame.onload = function () { imgInfo = "img ok " + frame.naturalWidth + "x" + frame.naturalHeight; paint(); };
         frame.onerror = function () {
             if (lastFrameId >= 0 && frame.src.indexOf("current.bmp") >= 0) {
