@@ -202,11 +202,19 @@ static in_addr_t get_wifi_addr(void)
     return result;
 }
 
+/* Advertise BOTH _airplay._tcp and _raop._tcp, exactly like UxPlay does.
+ * macOS only lists a receiver as a mirroring target when it sees the
+ * "<deviceid>@<name>" _raop._tcp service too, and the _airplay TXT needs `pi`. */
+#define MDNS_FEATURES  "0x5A7FFEE6,0x0"
+#define MDNS_DEVICEID  "AA:BB:CC:DD:EE:FF"
+#define MDNS_RAOP_ID   "AABBCCDDEEFF"
+#define MDNS_PI        "2e388006-13ba-4041-9a67-25dd4a43d536"
+
 static int build_mdns_response(uint8_t *out, int maxlen,
                                const char *device_name, int port,
                                in_addr_t local_ip, const char *pk_b64)
 {
-    uint8_t *p = out, *end = out + maxlen;
+    uint8_t *p = out, *end = out + maxlen - 16;
 #define WU16(v) do { *p++ = ((v)>>8)&0xff; *p++ = (v)&0xff; } while(0)
 #define WU32(v) do { WU16((v)>>16); WU16((v)&0xffff); } while(0)
 #define WNAME(s) do { \
@@ -218,41 +226,57 @@ static int build_mdns_response(uint8_t *out, int maxlen,
         if (!_d) break; else _s=_d+1; } \
     *p++ = 0; } while(0)
 
+    char full_ap[256], full_raop[256], pk_txt[200];
+    snprintf(full_ap,   sizeof(full_ap),   "%s._airplay._tcp.local", device_name);
+    snprintf(full_raop, sizeof(full_raop), "%s@%s._raop._tcp.local", MDNS_RAOP_ID, device_name);
+    snprintf(pk_txt, sizeof(pk_txt), "pk=%s", pk_b64 ? pk_b64 : "");
+
+    /* id, flags (response+authoritative), qd=0, an=6, ns=0, ar=1 */
     WU16(0x0000); WU16(0x8400);
-    WU16(0); WU16(3); WU16(0); WU16(1);
+    WU16(0); WU16(6); WU16(0); WU16(1);
 
-    char full[256];
-    snprintf(full, sizeof(full), "%s._airplay._tcp.local", device_name);
+    const char *svc_ptr[2]  = { "_airplay._tcp.local", "_raop._tcp.local" };
+    const char *svc_full[2] = { full_ap, full_raop };
 
-    /* PTR */
-    WNAME("_airplay._tcp.local");
-    WU16(12); WU16(0x8001); WU32(MDNS_TTL);
-    uint8_t *rdp = p; p += 2; uint8_t *rds = p;
-    WNAME(full); uint16_t rdl = (uint16_t)(p-rds);
-    rdp[0]=rdl>>8; rdp[1]=rdl&0xff;
+    const char *txt_ap[] = {
+        "deviceid=" MDNS_DEVICEID, "features=" MDNS_FEATURES, "flags=0x4",
+        "model=AppleTV3,2", pk_txt, "pi=" MDNS_PI, "pw=false",
+        "srcvers=220.68", "vv=2", NULL };
+    char ft_txt[40]; snprintf(ft_txt, sizeof(ft_txt), "ft=%s", MDNS_FEATURES);
+    const char *txt_raop[] = {
+        "txtvers=1", "ch=2", "cn=0,1,2,3", "da=true", "et=0,3,5", "vv=2",
+        ft_txt, "am=AppleTV3,2", "md=0,1,2", "rhd=5.6.0.0", "pw=false",
+        "sf=0x4", "sr=44100", "ss=16", "sv=false", "tp=UDP", "vn=65537",
+        "vs=220.68", pk_txt, NULL };
+    const char **txts[2] = { txt_ap, txt_raop };
 
-    /* SRV */
-    WNAME(full);
-    WU16(33); WU16(0x8001); WU32(MDNS_TTL);
-    rdp = p; p += 2; rds = p;
-    WU16(0); WU16(0); WU16(port); WNAME("kindle.local");
-    rdl = (uint16_t)(p-rds); rdp[0]=rdl>>8; rdp[1]=rdl&0xff;
+    for (int s = 0; s < 2; s++) {
+        /* PTR (shared record: no cache-flush bit) */
+        WNAME(svc_ptr[s]);
+        WU16(12); WU16(0x0001); WU32(MDNS_TTL);
+        uint8_t *rdp = p; p += 2; uint8_t *rds = p;
+        WNAME(svc_full[s]);
+        uint16_t rdl = (uint16_t)(p-rds); rdp[0]=rdl>>8; rdp[1]=rdl&0xff;
 
-    /* TXT */
-    WNAME(full);
-    WU16(16); WU16(0x8001); WU32(MDNS_TTL);
-    rdp = p; p += 2; rds = p;
-    char pk_txt[200]; snprintf(pk_txt, sizeof(pk_txt), "pk=%s", pk_b64 ? pk_b64 : "");
-    const char *txts[] = {
-        "deviceid=AA:BB:CC:DD:EE:FF", "features=0x5A7FFFF7,0x1E",
-        "flags=0x4", "model=AppleTV3,2", pk_txt,
-        "srcvers=220.68", "statusFlags=68", "vv=2", NULL };
-    for (int i = 0; txts[i]; i++) {
-        uint8_t tl = (uint8_t)strlen(txts[i]); *p++ = tl; memcpy(p,txts[i],tl); p+=tl;
+        /* SRV */
+        WNAME(svc_full[s]);
+        WU16(33); WU16(0x8001); WU32(MDNS_TTL);
+        rdp = p; p += 2; rds = p;
+        WU16(0); WU16(0); WU16(port); WNAME("kindle.local");
+        rdl = (uint16_t)(p-rds); rdp[0]=rdl>>8; rdp[1]=rdl&0xff;
+
+        /* TXT */
+        WNAME(svc_full[s]);
+        WU16(16); WU16(0x8001); WU32(MDNS_TTL);
+        rdp = p; p += 2; rds = p;
+        for (int i = 0; txts[s][i]; i++) {
+            uint8_t tl = (uint8_t)strlen(txts[s][i]);
+            *p++ = tl; memcpy(p, txts[s][i], tl); p += tl;
+        }
+        rdl = (uint16_t)(p-rds); rdp[0]=rdl>>8; rdp[1]=rdl&0xff;
     }
-    rdl = (uint16_t)(p-rds); rdp[0]=rdl>>8; rdp[1]=rdl&0xff;
 
-    /* A record */
+    /* A record (additional) */
     WNAME("kindle.local");
     WU16(1); WU16(0x8001); WU32(MDNS_TTL); WU16(4);
     *p++ = (local_ip)&0xff; *p++ = (local_ip>>8)&0xff;
@@ -292,7 +316,7 @@ static void *mdns_thread_fn(void *arg)
             struct sockaddr_in from; socklen_t fl = sizeof(from);
             int ql = recvfrom(mdns_fd, qbuf, sizeof(qbuf), 0,
                               (struct sockaddr *)&from, &fl);
-            if (ql > 4 && !(qbuf[2]&0x80) && memmem(qbuf,ql,"_airplay",8))
+            if (ql > 4 && !(qbuf[2]&0x80) && (memmem(qbuf,ql,"_airplay",8) || memmem(qbuf,ql,"_raop",5)))
                 sendto(mdns_fd, resp, rlen, 0, (struct sockaddr *)&mcast, sizeof(mcast));
         }
         time_t now = time(NULL);

@@ -46,7 +46,7 @@ static void build_airplay_txt(dnssd_t *d)
 {
     dnssd_priv_t *priv = (dnssd_priv_t *)d->dnssd_private;
     char feat[32], flags[16], pk_entry[150], model[32], srcvers[24], vv[8];
-    snprintf(feat,    sizeof(feat),    "features=0x%llx,0x1E",
+    snprintf(feat,    sizeof(feat),    "features=0x%llX,0x0",
              (unsigned long long)(get_features(d) & 0xFFFFFFFFULL));
     snprintf(flags,   sizeof(flags),   "flags=0x4");
     snprintf(pk_entry,sizeof(pk_entry),"pk=%s", priv->pk_str);
@@ -57,7 +57,9 @@ static void build_airplay_txt(dnssd_t *d)
     char deviceid[32];
     snprintf(deviceid, sizeof(deviceid), "deviceid=%s", priv->hw_addr_str);
 
-    const char *parts[] = { deviceid, feat, flags, model, pk_entry, srcvers, vv, NULL };
+    const char *parts[] = { deviceid, feat, flags, model, pk_entry,
+                            "pi=2e388006-13ba-4041-9a67-25dd4a43d536", "pw=false",
+                            srcvers, vv, NULL };
     unsigned char *p = priv->airplay_txt;
     for (int i = 0; parts[i]; i++) {
         uint8_t len = (uint8_t)strlen(parts[i]);
@@ -99,7 +101,7 @@ dnssd_t *dnssd_init(const char *name, int name_len,
     priv->pk_str[0] = '\0';
 
     /* default features = RPiPlay/UxPlay mirroring bits */
-    set_features(d, 0x5A7FFFF7ULL);
+    set_features(d, 0x5A7FFEE6ULL);
 
     build_airplay_txt(d);
     if (error) *error = DNSSD_ERROR_NOERROR;
