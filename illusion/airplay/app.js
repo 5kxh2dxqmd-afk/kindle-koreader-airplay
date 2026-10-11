@@ -1,4 +1,5 @@
 (function () {
+    var API = "http://127.0.0.1:7080";
     var splash, viewer, errorPage, statusText, statusDot, frame, frameNote;
     var connected = false;
     var failures = 0;
@@ -8,7 +9,7 @@
 
     function request(path, done) {
         var xhr = new XMLHttpRequest();
-        xhr.open("GET", path, true);
+        xhr.open("GET", API + path, true);
         xhr.onreadystatechange = function () {
             if (xhr.readyState === 4) {
                 if (xhr.status >= 200 && xhr.status < 300) done(null, xhr);
@@ -58,7 +59,7 @@
                     frameNote.innerHTML = "";
                     if (data.frameId !== lastFrameId) {
                         lastFrameId = data.frameId;
-                        frame.src = "/api/frame.bmp?t=" + new Date().getTime();
+                        frame.src = API + "/api/frame.bmp?t=" + new Date().getTime();
                     }
                 } else {
                     frameNote.innerHTML = "Waiting for the first picture…";
