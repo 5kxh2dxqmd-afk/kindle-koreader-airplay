@@ -8,6 +8,8 @@
     var connected = false, failures = 0, lastFrameId = -1, started = false;
     var FLASH_EVERY = 40;   /* auto full-screen flash after this many new frames; 0 = off. Tap the screen to flash manually. */
     var flashEl, framesSinceFlash = 0;
+    var MODE_NAMES = ["AUTO", "INVERTED", "NORMAL"];   /* tap the top bar to cycle; matches server invert_mode */
+    var modeIdx = 0;
     var polls = 0, lastInfo = "booting", jsErrors = "", imgInfo = "img:-";
 
     function byId(id) { return document.getElementById(id); }
@@ -84,7 +86,9 @@
 
     function update() {
         polls++;
-        request("/api/status?t=" + new Date().getTime(), function (err, xhr) {
+        var tw = window.innerWidth || document.documentElement.clientWidth || 0;
+        var th = (window.innerHeight || document.documentElement.clientHeight || 0) - 62;   /* top bar 42 + bottom 20 */
+        request("/api/status?t=" + new Date().getTime() + "&w=" + tw + "&h=" + th + "&inv=" + modeIdx, function (err, xhr) {
             if (err) {
                 failures++;
                 dbg("ERR " + err.message);
@@ -134,6 +138,16 @@
         if (!splash || !frame) { return; }
         started = true;
         viewer.onclick = function () { framesSinceFlash = 0; flash(); };
+        var bar = viewer.getElementsByTagName("div")[0];   /* .viewer-bar */
+        var modeLabel = byId("mode-label");
+        if (bar) bar.onclick = function (e) {
+            e = e || window.event;
+            if (e.stopPropagation) e.stopPropagation(); else e.cancelBubble = true;
+            modeIdx = (modeIdx + 1) % 3;
+            if (modeLabel) modeLabel.innerHTML = "CONNECTED &middot; " + MODE_NAMES[modeIdx];
+            framesSinceFlash = 0;
+            flash();
+        };
         frame.onload = function () { imgInfo = "img ok " + frame.naturalWidth + "x" + frame.naturalHeight; paint(); };
         frame.onerror = function () {
             if (lastFrameId >= 0 && frame.src.indexOf("current.bmp") >= 0) {
