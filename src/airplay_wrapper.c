@@ -345,6 +345,12 @@ static struct {
     int              frame_w, frame_h, frame_ready;
 } g;
 
+/* Reuse the previous published frame as the next conversion target. The
+ * decoder callback writes here outside frame_mutex, then swaps under lock;
+ * renderers keep a stable source while scaling. */
+static uint8_t *g_decode_buf = NULL;
+static size_t g_decode_capacity = 0;
+
 /* ─── Direct framebuffer state ──────────────────────────────────── */
 
 static int    g_fb_fd     = -1;
@@ -355,11 +361,7 @@ static int    g_fb_stride = 0;
 static size_t g_fb_size   = 0;
 static int    g_fb_bpp    = 1;
 
-/* Last-rendered frame identity for dedup */
-static uint32_t g_last_hash = 0;
 static uint32_t g_update_marker = 0;  /* 0 = no previous update yet */
-static int      g_last_fw   = 0;
-static int      g_last_fh   = 0;
 static int      g_have_rendered = 0;
 
 typedef enum {
@@ -444,20 +446,33 @@ static void cb_video_process(void *cls, raop_ntp_t *ntp,
             continue;
         }
 
-        uint8_t *gray = malloc(w * h);
-        if (!gray) {
+        if (w > 8192 || h > 8192 || (size_t)w > SIZE_MAX / (size_t)h ||
+            (size_t)w * (size_t)h > 16u * 1024u * 1024u) {
+            dbg("video_process: reject oversized frame %dx%d", w, h);
             av_frame_unref(av_frame);
             continue;
         }
+        size_t gray_size = (size_t)w * (size_t)h;
+        if (gray_size > g_decode_capacity) {
+            uint8_t *next = realloc(g_decode_buf, gray_size);
+            if (!next) {
+                av_frame_unref(av_frame);
+                continue;
+            }
+            g_decode_buf = next;
+            g_decode_capacity = gray_size;
+        }
 
-        uint8_t *dst[4]   = { gray, NULL, NULL, NULL };
+        uint8_t *dst[4]   = { g_decode_buf, NULL, NULL, NULL };
         int      dstst[4] = { w, 0, 0, 0 };
         sws_scale(sws, (const uint8_t *const *)av_frame->data,
                   av_frame->linesize, 0, h, dst, dstst);
 
         pthread_mutex_lock(&g.frame_mutex);
-        free(g.frame_buf);
-        g.frame_buf   = gray;
+        uint8_t *old_frame = g.frame_buf;
+        g.frame_buf = g_decode_buf;
+        g_decode_buf = old_frame;
+        g_decode_capacity = old_frame ? (size_t)g.frame_w * (size_t)g.frame_h : 0;
         g.frame_w     = w;
         g.frame_h     = h;
         g.frame_ready = 1;
@@ -508,7 +523,7 @@ int airplay_mirror_start(const airplay_config_t *cfg)
     pthread_mutex_init(&g.frame_mutex, NULL);
 
     dbg("step: decoder_init");
-    if (decoder_init() < 0) { dbg("decoder_init failed"); return -1; }
+    if (decoder_init() < 0) { dbg("decoder_init failed"); airplay_mirror_stop(); return -1; }
     dbg("step: decoder_init OK");
 
     /* hardware address (use fixed for now) */
@@ -517,7 +532,7 @@ int airplay_mirror_start(const airplay_config_t *cfg)
     int err = 0;
     dbg("step: dnssd_init name=%s", name);
     g.dnssd = dnssd_init(name, (int)strlen(name), (const char *)hw, 6, 0, &err);
-    if (!g.dnssd) { dbg("dnssd_init failed err=%d",err); return -1; }
+    if (!g.dnssd) { dbg("dnssd_init failed err=%d",err); airplay_mirror_stop(); return -1; }
     dbg("step: dnssd_init OK");
 
     raop_callbacks_t cbs = {0};
@@ -539,7 +554,7 @@ int airplay_mirror_start(const airplay_config_t *cfg)
 
     dbg("step: raop_init");
     g.raop = raop_init(&cbs);
-    if (!g.raop) { dbg("raop_init failed"); return -1; }
+    if (!g.raop) { dbg("raop_init failed"); airplay_mirror_stop(); return -1; }
     dbg("step: raop_init OK");
 
     raop_set_log_callback(g.raop, cb_raop_log, NULL);
@@ -550,7 +565,7 @@ int airplay_mirror_start(const airplay_config_t *cfg)
     dbg("step: raop_init2");
     if (raop_init2(g.raop, 0, device_id,
                    "/mnt/us/koreader/plugins/airplay.koplugin/airplay_key.pem") < 0) {
-        dbg("raop_init2 failed"); raop_destroy(g.raop); g.raop=NULL; return -1;
+        dbg("raop_init2 failed"); airplay_mirror_stop(); return -1;
     }
     dbg("step: raop_init2 OK");
 
@@ -578,7 +593,7 @@ int airplay_mirror_start(const airplay_config_t *cfg)
     unsigned short actual = port;
     dbg("step: raop_start_httpd port=%d", (int)port);
     if (raop_start_httpd(g.raop, &actual) < 0) {
-        dbg("raop_start_httpd failed"); raop_destroy(g.raop); g.raop=NULL; return -1;
+        dbg("raop_start_httpd failed"); airplay_mirror_stop(); return -1;
     }
     dbg("raop httpd started on port %d", (int)actual);
 
@@ -620,12 +635,23 @@ int airplay_mirror_start(const airplay_config_t *cfg)
         };
         setsockopt(mdns_fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
 
-        mdns_args_t *a = malloc(sizeof(*a));
-        a->name = name; a->port = (int)actual;
-        memcpy(a->pk_b64, pk_b64, sizeof(a->pk_b64));
-        mdns_running = 1;
-        mdns_started = 1;
-        pthread_create(&mdns_tid, NULL, mdns_thread_fn, a);
+        mdns_args_t *a = calloc(1, sizeof(*a));
+        if (a) {
+            /* dnssd owns this name until stop joins the advertiser thread. */
+            a->name = dnssd_get_name(g.dnssd, NULL);
+            a->port = (int)actual;
+            snprintf(a->pk_b64, sizeof(a->pk_b64), "%s", pk_b64);
+            mdns_running = 1;
+            if (pthread_create(&mdns_tid, NULL, mdns_thread_fn, a) == 0) {
+                mdns_started = 1;
+            } else {
+                mdns_running = 0;
+                free(a);
+                dbg("mDNS thread creation failed");
+            }
+        } else {
+            dbg("mDNS args allocation failed");
+        }
     }
 
     dbg("airplay_mirror_start OK port=%d", (int)actual);
@@ -947,7 +973,6 @@ static void fb_cleanup(void)
     if (g_fb_mmap && g_fb_mmap != MAP_FAILED) { munmap(g_fb_mmap, g_fb_size); g_fb_mmap = NULL; }
     if (g_fb_fd >= 0) { close(g_fb_fd); g_fb_fd = -1; }
     g_fb_w = g_fb_h = g_fb_stride = g_fb_bpp = 0; g_fb_size = 0;
-    g_last_hash = 0; g_last_fw = 0; g_last_fh = 0;
     g_have_rendered = 0;
     g_refresh_variant = REFRESH_VARIANT_UNKNOWN;
     if (g_last_fb) { free(g_last_fb); g_last_fb = NULL; }
@@ -967,19 +992,6 @@ int airplay_mirror_render_direct(void)
 
     int sw = g.frame_w, sh = g.frame_h;
     uint8_t *src = g.frame_buf;
-
-    /* FNV-1a content hash (every 16th byte) — skip ioctl if frame unchanged */
-    uint32_t hash = 2166136261u;
-    int npx = sw * sh;
-    for (int i = 0; i < npx; i += 16)
-        hash = (hash ^ src[i]) * 16777619u;
-
-    if (hash == g_last_hash && sw == g_last_fw && sh == g_last_fh) {
-        g.frame_ready = 0;
-        pthread_mutex_unlock(&g.frame_mutex);
-        dbg("render_direct: skip (hash unchanged) %dx%d hash=0x%08x", sw, sh, hash);
-        return 1;  /* decoded but content unchanged — skip refresh */
-    }
 
     uint8_t *fb = (uint8_t *)g_fb_mmap;
 
@@ -1126,9 +1138,6 @@ int airplay_mirror_render_direct(void)
         update_mode == UPDATE_MODE_FULL ? "full" : "partial",
         update_w, update_h, update_left, update_top);
 
-    g_last_hash = hash;
-    g_last_fw   = sw;
-    g_last_fh   = sh;
     g_have_rendered = 1;
     g_last_forced_refresh = time(NULL);  /* reset ghost-clear clock on real refresh */
 
@@ -1172,9 +1181,6 @@ int airplay_mirror_clear_direct(void)
     }
 
     g_update_marker = next_marker;
-    g_last_hash = 0;
-    g_last_fw = 0;
-    g_last_fh = 0;
     g_have_rendered = 0;
     g_last_forced_refresh = time(NULL);
     if (g_last_fb && g_last_fb_w == g_fb_w && g_last_fb_h == g_fb_h)
@@ -1203,6 +1209,7 @@ void airplay_mirror_stop(void)
     pthread_mutex_lock(&g.frame_mutex);
     free(g.frame_buf); g.frame_buf = NULL; g.frame_ready = 0;
     pthread_mutex_unlock(&g.frame_mutex);
+    free(g_decode_buf); g_decode_buf = NULL; g_decode_capacity = 0;
     pthread_mutex_destroy(&g.frame_mutex);
 
     fb_cleanup();
