@@ -25,7 +25,7 @@ RUN apt-get update -qq && \
 
 # ── Build ARM static OpenSSL 1.1.1 ───────────────────────────────
 ARG OPENSSL_VER=1.1.1w
-RUN wget -q https://www.openssl.org/source/openssl-${OPENSSL_VER}.tar.gz && \
+RUN wget -q --tries=6 --waitretry=10 --timeout=30 --retry-connrefused https://www.openssl.org/source/openssl-${OPENSSL_VER}.tar.gz && \
     tar xf openssl-${OPENSSL_VER}.tar.gz && \
     cd openssl-${OPENSSL_VER} && \
     ./Configure linux-armv4 \
@@ -40,7 +40,7 @@ RUN wget -q https://www.openssl.org/source/openssl-${OPENSSL_VER}.tar.gz && \
 # ── Build ARM static libplist ─────────────────────────────────────
 # libplist 2.3.0 — only need the C library (no C++ binding)
 ARG PLIST_VER=2.3.0
-RUN wget -q https://github.com/libimobiledevice/libplist/releases/download/${PLIST_VER}/libplist-${PLIST_VER}.tar.bz2 && \
+RUN wget -q --tries=6 --waitretry=10 --timeout=30 --retry-connrefused https://github.com/libimobiledevice/libplist/releases/download/${PLIST_VER}/libplist-${PLIST_VER}.tar.bz2 && \
     tar xf libplist-${PLIST_VER}.tar.bz2 && \
     cd libplist-${PLIST_VER} && \
     ./configure \
@@ -60,7 +60,7 @@ RUN wget -q https://github.com/libimobiledevice/libplist/releases/download/${PLI
 # ── Build minimal ARM static ffmpeg ──────────────────────────────
 # Only what we need: H.264 decoder + libswscale (YUV→gray8 conversion)
 ARG FFMPEG_VER=4.4.4
-RUN wget -q https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VER}.tar.xz && \
+RUN wget -q --tries=6 --waitretry=10 --timeout=30 --retry-connrefused https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VER}.tar.xz && \
     tar xf ffmpeg-${FFMPEG_VER}.tar.xz && \
     cd ffmpeg-${FFMPEG_VER} && \
     ./configure \

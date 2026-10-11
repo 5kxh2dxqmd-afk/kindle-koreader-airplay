@@ -6,8 +6,11 @@
     var DEBUG = false;   /* true = show status strip at bottom of the screen */
     var splash, viewer, errorPage, statusText, statusDot, frame, frameNote, dbgEl;
     var connected = false, failures = 0, lastFrameId = -1, started = false;
-    var FLASH_EVERY = 40;   /* auto full-screen flash after this many new frames; 0 = off. Tap the screen to flash manually. */
-    var flashEl, framesSinceFlash = 0;
+    var POLL_MS = 300;          /* status poll interval while connected */
+    var SETTLE_TILES = 40;      /* after this many tile redraws... */
+    var SETTLE_MS = 1500;       /* ...and this long without changes, flash once to clear ghosting. Tap the screen to flash manually. */
+    var flashEl, dirtyTiles = 0, lastChangeAt = 0;
+    var tilesEl, tileImgs = [], tileVer = [], gridKey = "";
     var MODE_NAMES = ["AUTO", "INVERTED", "NORMAL"];   /* tap the top bar to cycle; matches server invert_mode */
     var modeIdx = 0;
     var polls = 0, lastInfo = "booting", jsErrors = "", imgInfo = "img:-";
@@ -70,6 +73,33 @@
         }, 250);
     }
 
+    /* The picture is a grid of small images (t<N>.bmp); only tiles whose version
+     * changed are reloaded, so e-ink redraws just the regions that moved. */
+    function buildGrid(d) {
+        var key = d.width + "x" + d.height + "/" + d.tw + "x" + d.th + "/" + d.cols + "x" + d.rows;
+        if (key === gridKey && tilesEl) return;
+        gridKey = key;
+        if (!tilesEl) {
+            tilesEl = document.createElement("div");
+            byId("frame-wrap").appendChild(tilesEl);
+            frame.style.display = "none";
+        }
+        tilesEl.innerHTML = "";
+        tilesEl.style.cssText = "position:relative;margin:0 auto;width:" + d.width + "px;height:" + d.height + "px;";
+        tileImgs = []; tileVer = [];
+        for (var i = 0; i < d.cols * d.rows; i++) {
+            var c = i % d.cols, r = Math.floor(i / d.cols);
+            var left = c * d.tw, top = r * d.th;
+            var w = Math.min(d.tw, d.width - left), h = Math.min(d.th, d.height - top);
+            tileVer[i] = -1;
+            if (w <= 0 || h <= 0) { tileImgs[i] = null; continue; }
+            var im = document.createElement("img");
+            im.style.cssText = "position:absolute;left:" + left + "px;top:" + top + "px;width:" + w + "px;height:" + h + "px;border:0;";
+            tilesEl.appendChild(im);
+            tileImgs[i] = im;
+        }
+    }
+
     function showSplash(message) {
         splash.className = "screen";
         viewer.className = "screen hidden";
@@ -110,12 +140,23 @@
             if (data.connected) {
                 connected = true;
                 showViewer();
-                if (data.hasFrame) {
+                if (data.hasFrame && data.tiles) {
                     frameNote.innerHTML = "";
+                    var nowMs = new Date().getTime();
                     if (data.frameId !== lastFrameId) {
                         lastFrameId = data.frameId;
-                        frame.src = "current.bmp?t=" + data.frameId;
-                        if (FLASH_EVERY && ++framesSinceFlash >= FLASH_EVERY) { framesSinceFlash = 0; flash(); }
+                        buildGrid(data);
+                        for (var ti = 0; ti < tileImgs.length; ti++) {
+                            if (tileImgs[ti] && tileVer[ti] !== data.tiles[ti]) {
+                                tileVer[ti] = data.tiles[ti];
+                                tileImgs[ti].src = "t" + ti + ".bmp?v=" + data.tiles[ti];
+                                dirtyTiles++;
+                            }
+                        }
+                        lastChangeAt = nowMs;
+                    } else if (dirtyTiles >= SETTLE_TILES && nowMs - lastChangeAt > SETTLE_MS) {
+                        dirtyTiles = 0;   /* picture settled after a burst of redraws: clear ghosting once */
+                        flash();
                     }
                 } else {
                     frameNote.innerHTML = "Waiting for the first picture…";
@@ -125,8 +166,10 @@
                 showSplash("Ready to connect");
                 frame.removeAttribute("src");
                 lastFrameId = -1;
+                gridKey = ""; tileVer = []; dirtyTiles = 0;
+                if (tilesEl) tilesEl.innerHTML = "";
             }
-            window.setTimeout(update, 1400);
+            window.setTimeout(update, connected ? POLL_MS : 1400);
         });
     }
 
@@ -137,7 +180,7 @@
         frame = byId("airplay-frame"); frameNote = byId("frame-note");
         if (!splash || !frame) { return; }
         started = true;
-        viewer.onclick = function () { framesSinceFlash = 0; flash(); };
+        viewer.onclick = function () { dirtyTiles = 0; flash(); };
         var bar = viewer.getElementsByTagName("div")[0];   /* .viewer-bar */
         var modeLabel = byId("mode-label");
         if (bar) bar.onclick = function (e) {
@@ -145,7 +188,7 @@
             if (e.stopPropagation) e.stopPropagation(); else e.cancelBubble = true;
             modeIdx = (modeIdx + 1) % 3;
             if (modeLabel) modeLabel.innerHTML = "CONNECTED &middot; " + MODE_NAMES[modeIdx];
-            framesSinceFlash = 0;
+            dirtyTiles = 0;
             flash();
         };
         frame.onload = function () { imgInfo = "img ok " + frame.naturalWidth + "x" + frame.naturalHeight; paint(); };

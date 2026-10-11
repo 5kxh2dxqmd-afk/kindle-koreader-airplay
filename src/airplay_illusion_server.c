@@ -36,6 +36,20 @@ static int fit_w = 1024, fit_h = 1024;
 static int invert_mode;   /* 0 = auto (invert dark UIs), 1 = always, 2 = never */
 static int inverted;      /* current auto decision, with hysteresis */
 
+/* Dirty-tile output: the frame is cut into TILE_COLS x TILE_ROWS tiles and only
+ * tiles whose pixels changed are rewritten (small BMPs t<N>.bmp) and get a new
+ * version number. The page then redraws just those regions, which is much
+ * faster on e-ink and leaves unchanged areas alone (no ghosting there). */
+#define TILE_COLS 4
+#define TILE_ROWS 4
+#define TILE_COUNT (TILE_COLS * TILE_ROWS)
+static unsigned long tile_ver[TILE_COUNT];
+static int tile_w, tile_h;
+/* Previous source frame, so an unchanged picture costs one memcmp per poll. */
+static uint8_t *src_prev;
+static size_t src_prev_cap;
+static int src_prev_w, src_prev_h, src_prev_fw, src_prev_fh, src_prev_inv;
+
 /* E-ink friendly output: quantise to the panel's 16 gray levels with a fixed
  * 4x4 ordered dither, and keep the previous output pixel when the new value is
  * within one level (hysteresis). Video noise then stops changing pixels from
@@ -103,18 +117,84 @@ static void put_u32(uint8_t *p, uint32_t v)
     p[3] = (uint8_t)(v >> 24);
 }
 
-static void write_bmp_copy(const char *dir)
+/* Write one tile of prev_gray as a 24-bit BMP, atomically (tmp + rename). */
+static int write_tile(int index, int x0, int y0, int tw, int th, int stride)
 {
-    if (!dir || !dir[0] || !have_frame || !bmp_frame || !bmp_length) return;
-    char path[768];
-    snprintf(path, sizeof(path), "%s/current.bmp", dir);
-    FILE *f = fopen(path, "wb");
-    if (!f) return;
-    (void)fwrite(bmp_frame, 1, bmp_length, f);
+    size_t row = ((size_t)tw * 3u + 3u) & ~(size_t)3u;
+    size_t size = 54u + row * (size_t)th;
+    uint8_t *buf = malloc(size);
+    if (!buf) return -1;
+    memset(buf, 0, 54u);
+    buf[0] = 'B'; buf[1] = 'M';
+    put_u32(buf + 2, (uint32_t)size);
+    put_u32(buf + 10, 54u);
+    put_u32(buf + 14, 40u);
+    put_u32(buf + 18, (uint32_t)tw);
+    put_u32(buf + 22, (uint32_t)th);
+    put_u16(buf + 26, 1);
+    put_u16(buf + 28, 24);
+    put_u32(buf + 34, (uint32_t)(row * (size_t)th));
+    for (int y = 0; y < th; y++) {
+        const uint8_t *src = prev_gray + (size_t)(y0 + y) * (size_t)stride + (size_t)x0;
+        uint8_t *dst = buf + 54u + (size_t)(th - y - 1) * row;
+        for (int x = 0; x < tw; x++) {
+            dst[x * 3]     = src[x];
+            dst[x * 3 + 1] = src[x];
+            dst[x * 3 + 2] = src[x];
+        }
+        if (row > (size_t)tw * 3u)
+            memset(dst + (size_t)tw * 3u, 0, row - (size_t)tw * 3u);
+    }
+    char tmp[768], path[768];
+    snprintf(tmp, sizeof(tmp), "%s/t%d.tmp", WAF_DIR, index);
+    snprintf(path, sizeof(path), "%s/t%d.bmp", WAF_DIR, index);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) { free(buf); return -1; }
+    size_t n = fwrite(buf, 1, size, f);
     fclose(f);
+    free(buf);
+    if (n != size) { remove(tmp); return -1; }
+    return rename(tmp, path);
 }
 
-/* Build a 24-bit BMP (BGR, 16-level dithered gray). Kindle's WebKit is unreliable with 8-bit paletted BMPs. */
+/* Whole current frame as one BMP (only for /api/frame.bmp, i.e. debugging). */
+static int build_full_bmp(void)
+{
+    if (!have_frame || !prev_gray || prev_w <= 0 || prev_h <= 0) return 0;
+    int w = prev_w, h = prev_h;
+    size_t row = ((size_t)w * 3u + 3u) & ~(size_t)3u;
+    size_t size = 54u + row * (size_t)h;
+    if (size > bmp_capacity) {
+        uint8_t *p = realloc(bmp_frame, size);
+        if (!p) return 0;
+        bmp_frame = p;
+        bmp_capacity = size;
+    }
+    memset(bmp_frame, 0, 54u);
+    bmp_frame[0] = 'B'; bmp_frame[1] = 'M';
+    put_u32(bmp_frame + 2, (uint32_t)size);
+    put_u32(bmp_frame + 10, 54u);
+    put_u32(bmp_frame + 14, 40u);
+    put_u32(bmp_frame + 18, (uint32_t)w);
+    put_u32(bmp_frame + 22, (uint32_t)h);
+    put_u16(bmp_frame + 26, 1);
+    put_u16(bmp_frame + 28, 24);
+    put_u32(bmp_frame + 34, (uint32_t)(row * (size_t)h));
+    for (int y = 0; y < h; y++) {
+        const uint8_t *src = prev_gray + (size_t)y * (size_t)w;
+        uint8_t *dst = bmp_frame + 54u + (size_t)(h - y - 1) * row;
+        for (int x = 0; x < w; x++) {
+            dst[x * 3]     = src[x];
+            dst[x * 3 + 1] = src[x];
+            dst[x * 3 + 2] = src[x];
+        }
+        if (row > (size_t)w * 3u)
+            memset(dst + (size_t)w * 3u, 0, row - (size_t)w * 3u);
+    }
+    bmp_length = size;
+    return 1;
+}
+
 static int refresh_frame(void)
 {
     int src_w = 0, src_h = 0;
@@ -122,6 +202,14 @@ static int refresh_frame(void)
         src_w <= 0 || src_h <= 0 ||
         (size_t)src_w > MAX_FRAME_BYTES / (size_t)src_h) {
         return have_frame;
+    }
+    size_t src_bytes = (size_t)src_w * (size_t)src_h;
+
+    /* Same picture and same settings as last time: nothing to do. */
+    if (have_frame && src_prev && src_prev_w == src_w && src_prev_h == src_h &&
+        src_prev_fw == fit_w && src_prev_fh == fit_h && src_prev_inv == invert_mode &&
+        memcmp(src_prev, gray_frame, src_bytes) == 0) {
+        return 1;
     }
 
     /* Scale to fit inside fit_w x fit_h, keeping the aspect ratio (up or down). */
@@ -161,14 +249,6 @@ static int refresh_frame(void)
         lut[i] = (uint8_t)(do_invert ? 255 - v : v);
     }
 
-    size_t row = ((size_t)w * 3u + 3u) & ~(size_t)3u;
-    size_t size = 14u + 40u + row * (size_t)h;
-    if (size > bmp_capacity) {
-        uint8_t *p = realloc(bmp_frame, size);
-        if (!p) return have_frame;
-        bmp_frame = p;
-        bmp_capacity = size;
-    }
     int same_dims = (prev_gray && prev_w == w && prev_h == h);
     {
         size_t need = (size_t)w * (size_t)h;
@@ -180,20 +260,13 @@ static int refresh_frame(void)
             same_dims = 0;
         }
     }
-    memset(bmp_frame, 0, 14u + 40u);
-    bmp_frame[0] = 'B'; bmp_frame[1] = 'M';
-    put_u32(bmp_frame + 2, (uint32_t)size);
-    put_u32(bmp_frame + 10, 14u + 40u);
-    put_u32(bmp_frame + 14, 40u);
-    put_u32(bmp_frame + 18, (uint32_t)w);
-    put_u32(bmp_frame + 22, (uint32_t)h);
-    put_u16(bmp_frame + 26, 1);
-    put_u16(bmp_frame + 28, 24);
-    put_u32(bmp_frame + 34, (uint32_t)(row * (size_t)h));
 
-    uint8_t *pixels = bmp_frame + 54u;
-    size_t changed = 0;
-    static int xi0[MAX_FIT_EDGE + 4], xi1[MAX_FIT_EDGE + 4], xfr[MAX_FIT_EDGE + 4];
+    int tcw = (w + TILE_COLS - 1) / TILE_COLS;
+    int tch = (h + TILE_ROWS - 1) / TILE_ROWS;
+    size_t tchg[TILE_COUNT];
+    memset(tchg, 0, sizeof(tchg));
+
+    static int xi0[MAX_FIT_EDGE + 4], xi1[MAX_FIT_EDGE + 4], xfr[MAX_FIT_EDGE + 4], xtile[MAX_FIT_EDGE + 4];
     for (int x = 0; x < w; x++) {
         long long sx = ((long long)(2 * x + 1) * src_w * 256) / (2LL * w) - 128;
         if (sx < 0) sx = 0;
@@ -202,6 +275,7 @@ static int refresh_frame(void)
         xi0[x] = x0;
         xi1[x] = x0 + 1 < src_w ? x0 + 1 : x0;
         xfr[x] = (int)(sx & 255);
+        xtile[x] = x / tcw;
     }
     for (int y = 0; y < h; y++) {
         long long sy = ((long long)(2 * y + 1) * src_h * 256) / (2LL * h) - 128;
@@ -212,8 +286,8 @@ static int refresh_frame(void)
         int fy = (int)(sy & 255);
         const uint8_t *r0 = gray_frame + (size_t)y0 * (size_t)src_w;
         const uint8_t *r1 = gray_frame + (size_t)y1 * (size_t)src_w;
-        uint8_t *dst = pixels + (size_t)(h - y - 1) * row;
         uint8_t *prev_row = prev_gray + (size_t)y * (size_t)w;
+        int trow = (y / tch) * TILE_COLS;
         for (int x = 0; x < w; x++) {
             int fx = xfr[x];
             int top = r0[xi0[x]] * (256 - fx) + r0[xi1[x]] * fx;
@@ -225,29 +299,49 @@ static int refresh_frame(void)
                 int d = (int)g - (int)prev_row[x];
                 if (d >= -EINK_HYSTERESIS && d <= EINK_HYSTERESIS) g = prev_row[x];
             }
-            if (!same_dims || g != prev_row[x]) changed++;
+            if (!same_dims || g != prev_row[x]) tchg[trow + xtile[x]]++;
             prev_row[x] = g;
-            dst[x * 3]     = g;
-            dst[x * 3 + 1] = g;
-            dst[x * 3 + 2] = g;
         }
-        if (row > (size_t)w * 3u)
-            memset(dst + (size_t)w * 3u, 0, row - (size_t)w * 3u);
     }
 
-    bmp_length = size;
+    /* Remember the source so an identical frame is skipped next time. */
+    if (src_bytes > src_prev_cap) {
+        uint8_t *np = realloc(src_prev, src_bytes);
+        if (np) { src_prev = np; src_prev_cap = src_bytes; }
+    }
+    if (src_prev && src_bytes <= src_prev_cap) {
+        memcpy(src_prev, gray_frame, src_bytes);
+        src_prev_w = src_w; src_prev_h = src_h;
+        src_prev_fw = fit_w; src_prev_fh = fit_h; src_prev_inv = invert_mode;
+    } else {
+        src_prev_w = 0;
+    }
+
     frame_width = w;
     frame_height = h;
     prev_w = w;
     prev_h = h;
-    /* Identical picture: keep the same frame id and skip the file writes. */
-    if (same_dims && changed == 0 && have_frame) return 1;
+    tile_w = tcw;
+    tile_h = tch;
+
+    int any = 0;
+    for (int t = 0; t < TILE_COUNT; t++) {
+        if (!tchg[t]) continue;
+        int x0 = (t % TILE_COLS) * tcw, y0 = (t / TILE_COLS) * tch;
+        if (x0 >= w || y0 >= h) continue;
+        int tw = tcw; if (x0 + tw > w) tw = w - x0;
+        int th = tch; if (y0 + th > h) th = h - y0;
+        if (write_tile(t, x0, y0, tw, th, w) == 0) {
+            tile_ver[t]++;
+            any = 1;
+        } else {
+            prev_w = 0;   /* couldn't write: force a full redraw on the next pass */
+            src_prev_w = 0;
+        }
+    }
+    if (same_dims && !any && have_frame) return 1;
     frame_sequence++;
     have_frame = 1;
-    /* file:// WAF can show this without crossing onto http://127.0.0.1.
-     * Only the WAF copy is needed; skipping the /mnt/us copy halves the flash
-     * writes now that frames are screen-sized. */
-    write_bmp_copy(WAF_DIR);
     return 1;
 }
 
@@ -347,16 +441,22 @@ static void serve_request(int fd)
             frame_height = 0;
             prev_w = 0;
             prev_h = 0;
+            tile_w = 0;
+            tile_h = 0;
         }
-        char json[192];
+        char json[640];
         int len = snprintf(json, sizeof(json),
-            "{\"connected\":%s,\"hasFrame\":%s,\"width\":%d,\"height\":%d,\"frameId\":%lu}",
+            "{\"connected\":%s,\"hasFrame\":%s,\"width\":%d,\"height\":%d,\"frameId\":%lu,"
+            "\"cols\":%d,\"rows\":%d,\"tw\":%d,\"th\":%d,\"tiles\":[",
             connected_client ? "true" : "false", have_frame ? "true" : "false",
-            frame_width, frame_height, frame_sequence);
+            frame_width, frame_height, frame_sequence, TILE_COLS, TILE_ROWS, tile_w, tile_h);
+        for (int t = 0; t < TILE_COUNT && len < (int)sizeof(json) - 32; t++)
+            len += snprintf(json + len, sizeof(json) - (size_t)len, "%s%lu", t ? "," : "", tile_ver[t]);
+        len += snprintf(json + len, sizeof(json) - (size_t)len, "]}");
         response(fd, 200, "OK", "application/json", json, (size_t)len);
     } else if (strncmp(path, "/api/frame.bmp", 14) == 0) {
         refresh_frame();
-        if (have_frame) response(fd, 200, "OK", "image/bmp", bmp_frame, bmp_length);
+        if (build_full_bmp()) response(fd, 200, "OK", "image/bmp", bmp_frame, bmp_length);
         else response(fd, 503, "No Frame", "text/plain", "Waiting for video", 17);
     } else if (strncmp(path, "/api/stop", 9) == 0) {
         response(fd, 200, "OK", "application/json", "{\"stopping\":true}", 17);
