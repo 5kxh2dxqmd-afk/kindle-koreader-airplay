@@ -264,7 +264,7 @@ static int build_mdns_response(uint8_t *out, int maxlen,
     return (p < end) ? (int)(p - out) : -1;
 }
 
-typedef struct { const char *name; int port; char pk_b64[64]; } mdns_args_t;
+typedef struct { const char *name; int port; char pk_b64[128]; } mdns_args_t;
 
 static void *mdns_thread_fn(void *arg)
 {
