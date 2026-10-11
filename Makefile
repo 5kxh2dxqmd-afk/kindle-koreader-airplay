@@ -77,11 +77,11 @@ ILLUSION_BIN := airplay_ill
 TARGET ?= sf
 
 ifeq ($(TARGET),hf)
-  # HF: koxtoolchain's "kindlehf" toolchain bundles a modern-enough glibc
-  # already (it targets the actual on-device sysroot), so none of the
-  # fcntl64/getentropy@GLIBC_2.17 shims in src/compat_glibc.c are needed
-  # or wanted here — that file is SF-only.
-  SRC        := $(SRC_COMMON)
+  # HF: kindlehf's sysroot is fine for our own objects, but static deps are
+  # built with Debian's gcc-arm-linux-gnueabihf and still reference fcntl64 /
+  # getentropy. Shared .so links tolerate that; airplay_ill does not — so we
+  # use a HF-specific shim (no SF .symver) in src/compat_glibc_hf.c.
+  SRC        := $(SRC_COMMON) src/compat_glibc_hf.c
   ARM_CFLAGS := -march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=hard -flax-vector-conversions
 
   ifdef KOXTC
